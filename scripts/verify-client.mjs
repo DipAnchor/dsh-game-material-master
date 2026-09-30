@@ -155,6 +155,9 @@ const FEEDBACK_REQUIRED = {
   runImage: "单方向生图",
   runVideos: "生视频",
   runFrames: "抽帧",
+  prepareFramePick: "手动选帧候选帧",
+  setFramePick: "改序列帧位置",
+  resetFramePicks: "重置序列帧圆圈",
   rekey: "重跑抠像",
   compose: "合成整图",
   runTurnVideo: "转圈视频",
@@ -303,6 +306,7 @@ for (const file of files) {
   }
   checkRigContracts(text, label);
   checkTurnContracts(text, label);
+  checkFramePickContracts(text, label);
   checkInputAndZoomContracts(text, label);
 
   const renderers = renderersIn(text);
@@ -626,6 +630,11 @@ function checkRigContracts(text, label) {
     missing.length === 0,
     missing.length === 0 ? "" : `缺实现：${missing.join("、")}`
   );
+  check(
+    `${label}：远程 codec 提供 create() 工厂`,
+    text.includes('mode: "strict"') && /create:\s*\(\)\s*=>/.test(text) && !text.includes("schema: { parse:"),
+    "strict codec 要有 create()，宿主会调用 codec.create().parse()"
+  );
   // 「从部件栏拖进画布」必须由**它自己**那个 mouseup 收尾，不能被更早注册的
   // 移动/缩放 mouseup 抢走：那个 effect 先跑、把 drag 置空，React 同步重渲染后
   // 就把后面的监听器当清理函数摘掉了——实测表现是拖进去毫无反应、撤销也不亮。
@@ -698,6 +707,17 @@ function checkTurnContracts(text, label) {
  *   ② 序列帧缩略图双击要能看大图，大图窗口右上角有关闭按钮；
  *   ③ 阶段④ 要说明「为什么第 3 步抠过一次、这里还抠」。
  */
+function checkFramePickContracts(text, label) {
+  check(
+    `${label}：序列帧支持按视频手动选帧`,
+    text.includes("手动选帧") && text.includes("function FramePickAxis") && text.includes("function FramePickPanel")
+  );
+  check(
+    `${label}：手动选帧走独立的候选帧接口`,
+    text.includes("prepareFramePick") && text.includes("setFramePick") && text.includes("resetFramePicks")
+  );
+}
+
 function checkInputAndZoomContracts(text, label) {
   check(
     `${label}：数字框在失焦/回车时才提交`,

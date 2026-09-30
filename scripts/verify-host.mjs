@@ -64,10 +64,20 @@ async function main() {
   check("注册了一条 prefix 路由", captured.routes.length === 1 && captured.routes[0].kind === "prefix", JSON.stringify(captured.routes.map((r) => r.path)));
 
   const invocations = captured.manifest?.invocations ?? [];
-  check("manifest 方法数为 93", invocations.length === 93, `实际 ${invocations.length}`);
+  check("manifest 方法数为 97", invocations.length === 97, `实际 ${invocations.length}`);
   const ids = new Set(invocations.map((i) => i.id));
   check("方法 id 唯一", ids.size === invocations.length);
   check("所有方法都声明在 gameStudio 服务下", invocations.every((i) => i.service === "gameStudio" && i.namespace === "gameStudio"));
+  const badCodecs = invocations.flatMap((invocation) => {
+    const codecs = [
+      ["result", invocation.result],
+      ...invocation.parameters.map((parameter) => [parameter.name, parameter.codec])
+    ];
+    return codecs
+      .filter(([, codec]) => codec?.mode === "strict" && typeof codec.create !== "function")
+      .map(([label]) => `${invocation.method}/${label}`);
+  });
+  check("strict codec 都带 create() 工厂", badCodecs.length === 0, badCodecs.join(",") || "全部命中");
 
   const studio = ctx.get("gameStudio");
   check("gameStudio 服务已提供", studio !== undefined && typeof studio.getConfig === "function");
@@ -593,6 +603,45 @@ async function main() {
     await sleep(500);
     if (((await studio.getProject({ projectId })).jobs ?? []).length === 0) break;
   }
+
+  // 手动选帧：每个方向自己抽候选帧、拖圆圈决定输出帧。必须放在合成之前，
+  // 后面的转圈截帧会清掉行走视频。输出帧数仍跟 settings.frameCount（这里是 4）。
+  await expectThrow("手动选帧拒绝未知方向", () => studio.prepareFramePick({ projectId, key: "nope" }), "未知方向");
+  await expectThrow("没视频的方向不能手动选帧", () => studio.prepareFramePick({ projectId, key: "left" }), "视频");
+  const pickKick = await studio.prepareFramePick({ projectId, key: "front", count: 8 });
+  check("手动选帧任务被接受", pickKick.started === true, JSON.stringify(pickKick));
+  let picked = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    const snapshot = await studio.getProject({ projectId });
+    const node = snapshot.frames.front;
+    const jobGone = (snapshot.jobs ?? []).every((job) => job.key !== "frames:pick:front");
+    if (jobGone && node?.candidates?.frames?.length === 8 && node.status === "ready" && node.frames?.length === 4) {
+      picked = snapshot;
+      break;
+    }
+  }
+  check(
+    "手动选帧抽出 8 张候选、仍输出 4 帧",
+    picked !== null,
+    picked === null ? "超时" : `${picked.frames.front.status} 候选 ${picked.frames.front.candidates?.frames?.length} 输出 ${picked.frames.front.frames?.length}`
+  );
+  check("默认圆圈个数等于抽帧数", picked?.frames.front.candidates?.picks?.length === 4, JSON.stringify(picked?.frames.front.candidates?.picks));
+  const beforePick = createHash("md5").update(await readFile(join(projectRoot, "frames/front/f00.png"))).digest("hex");
+  const moved = await studio.setFramePick({ projectId, key: "front", slot: 0, index: 7 });
+  check("拖动第 1 个圆圈改到候选第 8 格", moved.changed === true && moved.index === 7 && moved.picks?.[0] === 7, JSON.stringify(moved));
+  const afterPick = createHash("md5").update(await readFile(join(projectRoot, "frames/front/f00.png"))).digest("hex");
+  check("改位置后这一张输出帧变了", beforePick !== afterPick);
+  const others = await studio.getProject({ projectId });
+  check(
+    "其它方向不受这次手动选帧影响",
+    others.frames.back?.frames?.length === 4 && others.frames.back?.candidates === undefined,
+    `back ${others.frames.back?.frames?.length} 帧 candidates=${others.frames.back?.candidates === undefined ? "无" : "有"}`
+  );
+  const written = await studio.setFramePicks({ projectId, key: "front", picks: [1, 3, 5, 7] });
+  check("一次写回四个位置", JSON.stringify(written.picks) === JSON.stringify([1, 3, 5, 7]), JSON.stringify(written.picks));
+  const reset = await studio.resetFramePicks({ projectId, key: "front" });
+  check("重置后回到等分", Array.isArray(reset.picks) && reset.picks.length === 4 && reset.picks[0] !== 7, JSON.stringify(reset.picks));
 
   const composeKick = await studio.compose({ projectId });
   check("合成任务被接受", composeKick.started === true, JSON.stringify(composeKick));

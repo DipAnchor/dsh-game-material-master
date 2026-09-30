@@ -91,6 +91,25 @@ const resetTurnPicksSchema = z.object({
 });
 const cutTurnFramesSchema = z.object({ projectId: z.string(), keys: z.array(z.string()).optional() });
 const runKeysSchema = z.object({ projectId: z.string(), keys: z.array(z.string()).optional() });
+/** 从一个方向的行走视频抽出候选帧。count 是候选张数（8~64），不是最终序列帧数。 */
+const prepareFramePickSchema = z.object({
+  projectId: z.string(),
+  key: z.string(),
+  count: z.number().optional()
+});
+/** 拖动某一个输出帧的圆圈。slot 是输出帧序号，index 是候选帧下标。 */
+const setFramePickSchema = z.object({
+  projectId: z.string(),
+  key: z.string(),
+  slot: z.number(),
+  index: z.number()
+});
+const setWalkPicksSchema = z.object({
+  projectId: z.string(),
+  key: z.string(),
+  picks: z.array(z.number())
+});
+const resetWalkPicksSchema = z.object({ projectId: z.string(), key: z.string() });
 const runVideosSchema = z.object({
   projectId: z.string(),
   keys: z.array(z.string()).optional(),
@@ -505,6 +524,10 @@ export const METHODS: MethodSpec[] = [
   { method: "pollVideos", payload: projectOnlySchema, result: okSchema },
   { method: "clearVideos", payload: runKeysSchema, result: okSchema },
   { method: "runFrames", payload: runKeysSchema, result: startedSchema },
+  { method: "prepareFramePick", payload: prepareFramePickSchema, result: startedSchema },
+  { method: "setFramePick", payload: setFramePickSchema, result: jsonObject },
+  { method: "setFramePicks", payload: setWalkPicksSchema, result: jsonObject },
+  { method: "resetFramePicks", payload: resetWalkPicksSchema, result: jsonObject },
   { method: "rekey", payload: projectOnlySchema, result: startedSchema },
   { method: "compose", payload: projectOnlySchema, result: startedSchema },
 
@@ -580,6 +603,19 @@ export const METHODS: MethodSpec[] = [
 export const PACKAGE_NAME = "dsh-game-material-master";
 export const SERVICE_NAME = "gameStudio";
 
+/**
+ * 当前 DSH（typert 0.1.7+）的 strict codec 必须带 `create()`。
+ * 注册时只检查工厂存在；真正过边界时调用 `codec.create().parse(value)`。
+ * 旧写法把 Zod schema 挂在 `schema` 上，启动时会直接拒绝整份 manifest。
+ */
+function strictCodec(typeSymbol: string, schema: z.ZodType) {
+  return {
+    mode: "strict" as const,
+    typeSymbol,
+    create: () => schema
+  };
+}
+
 /** 注册给宿主 typert 网关的 package face。 */
 export const MANIFEST = {
   package: PACKAGE_NAME,
@@ -599,10 +635,10 @@ export const MANIFEST = {
               name: "payload",
               wire: "payload",
               source: "json" as const,
-              codec: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Payload`, schema: spec.payload }
+              codec: strictCodec(`${PACKAGE_NAME}#${spec.method}Payload`, spec.payload)
             }
           ],
-    result: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Result`, schema: spec.result }
+    result: strictCodec(`${PACKAGE_NAME}#${spec.method}Result`, spec.result)
   })),
   model: { services: [], events: [], objects: [] }
 };
