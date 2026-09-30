@@ -38,9 +38,13 @@
     "build": "tsc -p tsconfig.json && node scripts/strip-client-export.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
+  },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
     "zod": "^4.4.3"

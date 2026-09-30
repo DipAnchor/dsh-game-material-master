@@ -73,7 +73,11 @@ if (row === undefined) {
 }
 console.log(`找到入口：${row.id} rev=${row.rev}`);
 
-const bundle = await get(row.url);
+// 新版客户端的模块图给的是**相对路径**（`plugins/??<id>/client.js&rev=…`），旧版是绝对路径。
+// 直接把它当 request-target 发出去会被 HTTP 解析器判成非法 origin-form，服务端回 400
+// 而字节数为 0——看起来像「束没提供」，其实只是少了个前导斜杠。
+const bundlePath = row.url.startsWith("/") ? row.url : `/${row.url}`;
+const bundle = await get(bundlePath);
 console.log(`按图取束：HTTP ${bundle.status}，${bundle.body.length} 字节`);
 if (process.env.DSH_VERIFY_DUMP === "1") {
   console.log("── 束开头 ──");
