@@ -92,6 +92,32 @@ export interface FramesNode {
   rawWidth?: number;
   rawHeight?: number;
   rawFrameCount?: number;
+  /**
+   * 手动选帧：把这一段行走视频匀抽成候选帧，再用圆圈挑出要进序列帧的那几张。
+   * 没有它时，序列帧来自「整段等分」的 `runFrames`。
+   */
+  candidates?: FrameCandidates;
+}
+
+/** 某一个方向的行走视频候选帧，以及输出序列帧各自落在哪一张上。 */
+export interface FrameCandidates {
+  status: NodeStatus;
+  /** 候选帧（绿幕原图）相对路径，按时间顺序。 */
+  frames: string[];
+  /** 每一张候选帧对应的时间（秒）。 */
+  times: number[];
+  raw?: string;
+  rawWidth?: number;
+  rawHeight?: number;
+  rawFrameCount?: number;
+  duration?: number;
+  /** 整段视频的缩略条带，圆圈对着它拖。 */
+  strip?: string;
+  /** 输出帧各自对应的候选帧下标。长度等于项目的「每段视频抽帧数」。 */
+  picks: number[];
+  error?: string;
+  stale?: boolean;
+  updatedAt?: number;
 }
 
 export interface SheetState {
@@ -515,7 +541,8 @@ function normalizeProject(raw: any): Project {
         frames: Array.isArray(node.frames) ? node.frames.map(String) : [],
         keyed: Array.isArray(node.keyed) ? node.keyed.map(String) : [],
         approved: node.approved === true,
-        stale: node.stale === true
+        stale: node.stale === true,
+        candidates: normalizeFrameCandidates(node.candidates)
       };
     }
   }
@@ -576,6 +603,25 @@ function normalizeProject(raw: any): Project {
 function num(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
   return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeFrameCandidates(raw: any): FrameCandidates | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  return {
+    status: raw.status ?? "empty",
+    frames: Array.isArray(raw.frames) ? raw.frames.map(String) : [],
+    times: Array.isArray(raw.times) ? raw.times.map((value: unknown) => num(value, 0)) : [],
+    raw: typeof raw.raw === "string" ? raw.raw : undefined,
+    rawWidth: typeof raw.rawWidth === "number" ? raw.rawWidth : undefined,
+    rawHeight: typeof raw.rawHeight === "number" ? raw.rawHeight : undefined,
+    rawFrameCount: typeof raw.rawFrameCount === "number" ? raw.rawFrameCount : undefined,
+    duration: typeof raw.duration === "number" ? raw.duration : undefined,
+    strip: typeof raw.strip === "string" ? raw.strip : undefined,
+    picks: Array.isArray(raw.picks) ? raw.picks.map((value: unknown) => Math.max(0, Math.round(num(value, 0)))) : [],
+    error: typeof raw.error === "string" ? raw.error : undefined,
+    stale: raw.stale === true,
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : undefined
+  };
 }
 
 function clampIntSetting(value: unknown, fallback: number, min: number, max: number): number {

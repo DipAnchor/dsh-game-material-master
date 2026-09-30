@@ -35,12 +35,16 @@ import {
   ensurePoller,
   listJobs,
   pollVideosOnce,
+  resetFramePicks,
   resetTurnPicks,
+  setFramePick,
+  setFramePicks,
   setImageMode,
   setTurnPick,
   setTurnPicks,
   startAllImages,
   startCompose,
+  startFramePick,
   startExtract,
   startImage,
   startRekey,
@@ -679,6 +683,24 @@ export class GameStudioGateway extends TypertRemoteService {
       throw new Error("还没有可抽帧的视频，请先在第 2 步生成视频");
     }
     return startExtract(projectId, targets);
+  }
+  async prepareFramePick(payload) {
+    const input = asRecord(payload);
+    const count = input.count === undefined || input.count === null ? undefined : clampInt(input.count, 32, 8, 64);
+    return startFramePick(asString(input.projectId), asString(input.key), count);
+  }
+  async setFramePick(payload) {
+    const input = asRecord(payload);
+    return setFramePick(asString(input.projectId), asString(input.key), Number(input.slot), Number(input.index));
+  }
+  async setFramePicks(payload) {
+    const input = asRecord(payload);
+    const picks = Array.isArray(input.picks) ? input.picks.map((value) => Number(value)) : [];
+    return setFramePicks(asString(input.projectId), asString(input.key), picks);
+  }
+  async resetFramePicks(payload) {
+    const input = asRecord(payload);
+    return resetFramePicks(asString(input.projectId), asString(input.key));
   }
   async rekey(payload) {
     const projectId = asString(asRecord(payload).projectId);
