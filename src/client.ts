@@ -31,13 +31,7 @@
 
     // ── 远程贡献 ─────────────────────────────────────────────────────────
     // 与宿主 src/wire.ts 的 METHODS 必须一一对应；那份是唯一的真源。
-    //
-    // codec 必须带 `create()` 工厂：客户端的 typert registry 与宿主**同源校验**
-    // （dsh-typert-registry/lib/client.js 的 validateCodec），只认 `create`，
-    // 缺了就抛 `typert: … strict codec has no create() factory`，插件在浏览器里
-    // 直接挂不起来。浏览器侧不做真正的编解码，透传即可。
-    const passthroughSchema = { parse: (value) => value };
-    const codec = (symbol) => ({ mode: "strict", typeSymbol: symbol, create: () => passthroughSchema });
+    const codec = (symbol) => ({ mode: "strict", typeSymbol: symbol, schema: { parse: (value) => value } });
 
     const REMOTE_METHODS = [
       ["getConfig", false],

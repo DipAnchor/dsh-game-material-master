@@ -599,10 +599,10 @@ export const MANIFEST = {
               name: "payload",
               wire: "payload",
               source: "json" as const,
-              codec: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Payload`, create: () => spec.payload }
+              codec: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Payload`, schema: spec.payload }
             }
           ],
-    result: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Result`, create: () => spec.result }
+    result: { mode: "strict" as const, typeSymbol: `${PACKAGE_NAME}#${spec.method}Result`, schema: spec.result }
   })),
   model: { services: [], events: [], objects: [] }
 };
