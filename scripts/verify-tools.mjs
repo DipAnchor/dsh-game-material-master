@@ -197,7 +197,7 @@ async function main() {
   const run = (name, args) => tool(name).execute(args, { signal: undefined });
 
   const emptyIntake = await run("game_material_intake", { module: "sprite" });
-  check("没配 Key 时给出 blocker", emptyIntake.blockers.some((text) => text.includes("火山方舟")), emptyIntake.blockers.join("；"));
+  check("没配 Key 时给出 blocker", emptyIntake.blockers.some((text) => text.includes("渠道")), emptyIntake.blockers.join("；"));
   check(
     "必问审核模式，且只有 auto / manual 两个选项",
     Array.isArray(emptyIntake.reviewModeQuestion?.options) &&
@@ -223,8 +223,9 @@ async function main() {
     Object.keys(emptyIntake.known).join("、")
   );
 
-  // 配置一个假 Key，blocker 应当消失。
-  await studio.saveConfig({ arkApiKey: "sk-verify-tools", minimaxApiKey: "mm-verify-tools" });
+  // 配一把假 Key，blocker 应当消失。**粒度是供应商**——U4 之后扁平 key 已经不存在了。
+  const keysConfig = await studio.getConfig();
+  await studio.saveSupplierKey({ id: keysConfig.bind.image.default.supplierId, apiKey: "sk-verify-tools" });
   const withKey = await run("game_material_intake", { module: "sprite" });
   check("配好 Key 后不再报 blocker", withKey.blockers.length === 0, withKey.blockers.join("；"));
 

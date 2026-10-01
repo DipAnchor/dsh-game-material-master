@@ -47,15 +47,19 @@ npm run typecheck    # 只做类型检查
 纯本地自检（不联网、不花钱），改完代码**至少跑这几个**：
 
 ```bash
-node scripts/verify-host.mjs       # 宿主全链路（285 项）
-node scripts/verify-client.mjs     # 浏览器半区契约（299 项）
+node scripts/verify-host.mjs       # 宿主全链路（328 项）
+node scripts/verify-client.mjs     # 浏览器半区契约（311 项）
 node scripts/verify-tools.mjs      # 对话调用面（109 项）
 node scripts/verify-pipeline.mjs   # 抽帧 / 抠像 / 合成（40 项）
-node scripts/verify-feedback.mjs   # 浏览器半区真渲染（119 项）
+node scripts/verify-feedback.mjs   # 浏览器半区真渲染（145 项）
 ```
 
 其余脚本（`verify-rig*.mjs`、`e2e-*.mjs` 等）的覆盖范围见 ENGINEERING.md 的「自检脚本」表。
 `e2e-*.mjs` / `probe-redraw.mjs` 会**真实调 API 花钱**，不要顺手跑。
+> ⚠️ 渠道层改造（U1–U4）之后，那 5 个花钱脚本**还没跟上**：它们仍在读
+> `config.arkApiKey` / `config.arkModel` / `config.minimaxModel` 这类字段，而 U4 已经把它们
+> 从 `Config` 与视图里删掉了。跑起来会在第一处读取就报「未配置」。要改的地方见
+> docs/ENGINEERING.md 的「渠道层」一节末尾。
 
 ---
 

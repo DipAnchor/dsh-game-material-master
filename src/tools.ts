@@ -934,19 +934,41 @@ function intakeFor(module: ModuleKey, id: string, told: Set<string>, config: any
     questions.push({ key, question, why, how });
   };
 
+  /**
+   * 「已知配置」与「阻塞项」。
+   *
+   * U4 之后渠道层是唯一真源，所以这里读的是**渠道与供应商**：一个模块要能跑，
+   * 至少得有一条协议对得上的渠道、一个配了密钥的供应商，而且那个供应商被用途绑定指到。
+   * 只报「配没配」，绝不回传密钥本体。
+   */
+  const slotOf = (capability: string, purpose: string) => config?.resolved?.[capability]?.[purpose] ?? null;
+  const nameOfChannel = (slot) => {
+    if (slot === null || slot === undefined) return "未配置";
+    const channel = (config?.channels ?? []).find((entry) => entry.id === slot.channelId);
+    return `${channel?.name ?? slot.channelId} · ${slot.model}`;
+  };
+
   if (module === "sprite" || module === "image" || module === "rig") {
-    if (config?.arkApiKeySet !== true) {
-      blockers.push("还没配置火山方舟 API Key（生图必需）：设置 → 游戏素材大师 → 火山方舟 API Key，配好点「测试连接」。");
+    const purpose = module === "rig" ? "sheet" : "default";
+    const slot = slotOf("image", purpose);
+    if (slot === null || slot.keySet !== true) {
+      blockers.push(
+        "还没配置可用的生图渠道（生图必需）：设置 → 游戏素材大师 →「新增渠道」+「新增供应商」并填 Key，" +
+          `再把「用途绑定 · ${purpose === "sheet" ? "拆件摊平图" : "生图默认"}」指到它。`
+      );
     }
-    known.生图模型 = config?.arkModel;
-    known.出图尺寸 = config?.arkSize;
+    known.生图渠道 = nameOfChannel(slot);
   }
   if (module === "sequence") {
-    if (config?.minimaxApiKeySet !== true) {
-      blockers.push("还没配置 MiniMax API Key（生视频必需）：设置 → 游戏素材大师 → MiniMax API Key，配好点「测试连接」。");
+    const slot = slotOf("video", "default");
+    if (slot === null || slot.keySet !== true) {
+      blockers.push(
+        "还没配置可用的视频渠道（生视频必需）：设置 → 游戏素材大师 →「新增渠道」+「新增供应商」并填 Key，" +
+          "再把「用途绑定 · 视频默认」指到它。"
+      );
     }
-    known.视频模型 = config?.minimaxModel;
-    known.BaseURL = config?.minimaxBaseUrl;
+    known.视频渠道 = nameOfChannel(slot);
+    known.当前渠道地址 = slot?.baseUrl ?? "未配置";
   }
   if (module === "sprite") {
     known.默认单格尺寸 = `${config?.cellWidth ?? "?"}×${config?.cellHeight ?? "?"}`;
@@ -962,12 +984,15 @@ function intakeFor(module: ModuleKey, id: string, told: Set<string>, config: any
   }
   if (module === "sequence") {
     known.两种输入模式 = "首尾帧模式（必须给首帧图）/ 多模态参考模式（参考图 ≤9 张 + 参考视频 ≤3 段），平台规定互斥";
-    known.分辨率与时长档位 = config?.minimaxCapabilities;
+    const slot = slotOf("video", "default");
+    const channel = slot === null ? undefined : (config?.channels ?? []).find((entry) => entry.id === slot.channelId);
+    const caps = channel?.models.find((entry) => entry.id === slot?.model)?.capability;
+    known.分辨率与时长档位 = caps?.resolutions ?? "未知（按当前渠道协议的能力）";
   }
   if (module === "rig") {
     known.四个阶段 = "① 拆件 → ② 装配定位 → ③ 骨骼与动画 → ④ 图集";
     known.只有第一步花钱 = "① 拆件是一次 Seedream 生图（约 0.2 元）；②③④ 都是本地计算，重跑不额外花钱";
-    known.默认拆件网格 = `${config ? "" : ""}4 列 × 4 行 = 16 个标准人形部件（头/脖子/躯干/胯/上臂/小臂/手/大腿/小腿/脚），格子位置即部件身份`;
+    known.默认拆件网格 = "4 列 × 4 行 = 16 个标准人形部件（头/脖子/躯干/胯/上臂/小臂/手/大腿/小腿/脚），格子位置即部件身份";
     known.默认动画 = "idle 待机 / walk 行走 / run 奔跑 / wave 挥手 / jump 跳跃 / attack 攻击";
   }
 

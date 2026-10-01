@@ -167,44 +167,6 @@ export function emptyBindConfig(): BindConfig {
 }
 
 export interface Config {
-  /** 火山方舟（Ark）API Key。 */
-  arkApiKey: string;
-  arkBaseUrl: string;
-  /** 生图模型 ID，也支持推理接入点 ID（ep-xxxx）。 */
-  arkModel: string;
-  /**
-   * **部件重绘**单独用的模型 ID；空串 = 跟随 `arkModel`（默认）。
-   *
-   * 拆件与重绘对模型的要求本来就不同（一个是「按提示词画一整张摊平图」，
-   * 一个是「原地改这一小块、保持轮廓」），分开设置留出了切换空间。
-   * 默认跟随主模型——没有证据表明某个模型在这个任务上系统性更好。
-   */
-  arkRedrawModel: string;
-  /** `2K` / `1K` / `4K`，或显式 `宽x高`。 */
-  arkSize: string;
-  arkWatermark: boolean;
-  /** 请求超时（毫秒）。 */
-  arkTimeoutMs: number;
-
-  /** MiniMax API Key。 */
-  minimaxApiKey: string;
-  /**
-   * **主机根地址**（不含 /v1、/v2）。CN 平台是 https://api.minimax.cn。
-   * 选「优云智算版 H3」时该值被忽略，插件固定走 https://cp.compshare.cn。
-   */
-  minimaxBaseUrl: string;
-  /**
-   * 图生视频模型：MiniMax-H3 / H3-Max 走 v2 协议，Hailuo / I2V 走 v1；
-   * 「优云智算版 H3」是独立选项，走优云智算网关（多一层 /minimax 路径）。
-   */
-  minimaxModel: string;
-  /** 时长（秒）。官方 H3 为 4~15（优云智算版放宽到 4~30），Hailuo 只能是 6 或 10。 */
-  minimaxDuration: number;
-  /** `480P` / `768P` / `1080P` / `2K`，实际有效档位取决于模型。 */
-  minimaxResolution: string;
-  minimaxPromptOptimizer: boolean;
-  minimaxTimeoutMs: number;
-
   /** 最终整图单格宽高（像素）。 */
   cellWidth: number;
   cellHeight: number;
@@ -255,8 +217,8 @@ export interface Config {
   /**
    * ── 渠道层 ──
    *
-   * U1 期间这三项与上面的扁平字段**互为投影**（见 docs/渠道层与设置页改造方案.md §9.4）：
-   * 旧设置页只写扁平字段，所以写完必须重算默认渠道；新 RPC 只写渠道，所以写完必须回写扁平。
+   * 地址、密钥、模型、协议私有参数**全部**住在这里——`ark*` / `minimax*` 那批扁平字段
+   * 已经删干净（U4）。所以不存在「两边谁说了算」的问题：这里就是唯一真源。
    */
   channels: Record<string, ChannelConfig>;
   suppliers: Record<string, SupplierConfig>;
@@ -268,23 +230,6 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  arkApiKey: "",
-  arkBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-  arkModel: "doubao-seedream-4-0-250828",
-  /** 默认跟随主模型；需要时可在设置里单独指定。 */
-  arkRedrawModel: "",
-  arkSize: "2K",
-  arkWatermark: false,
-  arkTimeoutMs: 180000,
-
-  minimaxApiKey: "",
-  minimaxBaseUrl: "https://api.minimaxi.com",
-  minimaxModel: "MiniMax-H3",
-  minimaxDuration: 5,
-  minimaxResolution: "2K",
-  minimaxPromptOptimizer: true,
-  minimaxTimeoutMs: 120000,
-
   cellWidth: 256,
   cellHeight: 256,
   frameCount: 8,
@@ -310,7 +255,10 @@ export const DEFAULT_CONFIG: Config = {
   suppliers: {},
   bind: emptyBindConfig(),
   channelSecrets: {},
-  channelVersion: CHANNEL_VERSION
+  // 默认给 **0**（＝没迁过）：全新安装与「只有扁平字段的老配置」走同一条迁移，
+  // 于是新装也自带两条默认渠道，而不是让用户对着一个空列表发呆。
+  // 真正落过盘之后是 `CHANNEL_VERSION`，用户把渠道全删光也不会被重新种回来。
+  channelVersion: 0
 };
 
 function asInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -334,7 +282,80 @@ function asNumber(value: unknown, fallback: number, min: number, max: number): n
 }
 
 /** 扁平字段那一组（不含渠道层）。迁移与投影都在这两半之间搬。 */
-export type FlatConfig = Omit<Config, "channels" | "suppliers" | "bind" | "channelSecrets" | "channelVersion">;
+/**
+ * 旧版扁平配置的形状——**只给迁移用**。
+ *
+ * U4 之后它已经不是 `Config` 的一部分、也不再出现在视图里。留着它的唯一原因：
+ * 盘上的 `config.json` 还可能正是这个形状，第一次以新版本启动时要把它折成渠道层。
+ * 所以它必须是**显式形状**，不能写成 `Omit<Config, …>`——`Config` 已经不含这些字段了。
+ */
+export interface LegacyFlatConfig {
+  arkApiKey: string;
+  arkBaseUrl: string;
+  arkModel: string;
+  arkRedrawModel: string;
+  arkSize: string;
+  arkWatermark: boolean;
+  arkTimeoutMs: number;
+  minimaxApiKey: string;
+  minimaxBaseUrl: string;
+  minimaxModel: string;
+  minimaxDuration: number;
+  minimaxResolution: string;
+  minimaxPromptOptimizer: boolean;
+  minimaxTimeoutMs: number;
+}
+
+/**
+ * 迁移用的默认值：**冻结的历史值**，不是当前默认值。
+ *
+ * 它们已经不再用于生成新配置（新配置的地址与模型来自渠道）。但把一份「只填了一半」
+ * 的老 `config.json` 折成渠道时，缺席的那一半需要历史默认值兜着——若改用「今天的
+ * 默认值」，迁移结果会随着以后改默认值而漂移，同一条老配置迁两次可能得到不同结果。
+ */
+const LEGACY_FLAT_DEFAULTS: LegacyFlatConfig = {
+  arkApiKey: "",
+  arkBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+  arkModel: "doubao-seedream-4-0-250828",
+  arkRedrawModel: "",
+  arkSize: "2K",
+  arkWatermark: false,
+  arkTimeoutMs: 180000,
+  minimaxApiKey: "",
+  minimaxBaseUrl: "https://api.minimaxi.com",
+  minimaxModel: "MiniMax-H3",
+  minimaxDuration: 5,
+  minimaxResolution: "2K",
+  minimaxPromptOptimizer: true,
+  minimaxTimeoutMs: 120000
+};
+
+/** 从盘上读回来的原始记录里取一份旧版扁平配置（缺席项用冻结的历史默认值）。 */
+function legacyFlatOf(raw: Record<string, unknown>): LegacyFlatConfig {
+  const text = (key: keyof LegacyFlatConfig): string => asString(raw[key], LEGACY_FLAT_DEFAULTS[key] as string);
+  const model = text("minimaxModel");
+  // 时长 / 分辨率按模型收敛一次再落盘：老配置里换过模型之后，旧档位可能已经不合法。
+  const params = normalizeVideoParams(model, {
+    duration: raw.minimaxDuration ?? LEGACY_FLAT_DEFAULTS.minimaxDuration,
+    resolution: raw.minimaxResolution ?? LEGACY_FLAT_DEFAULTS.minimaxResolution
+  });
+  return {
+    arkApiKey: text("arkApiKey"),
+    arkBaseUrl: text("arkBaseUrl").replace(/\/+$/, ""),
+    arkModel: text("arkModel"),
+    arkRedrawModel: text("arkRedrawModel"),
+    arkSize: text("arkSize"),
+    arkWatermark: asBool(raw.arkWatermark, LEGACY_FLAT_DEFAULTS.arkWatermark),
+    arkTimeoutMs: asInt(raw.arkTimeoutMs, LEGACY_FLAT_DEFAULTS.arkTimeoutMs, 10000, 900000),
+    minimaxApiKey: text("minimaxApiKey"),
+    minimaxBaseUrl: normalizeVideoBaseUrl(text("minimaxBaseUrl")) || LEGACY_FLAT_DEFAULTS.minimaxBaseUrl,
+    minimaxModel: model,
+    minimaxDuration: params.duration,
+    minimaxResolution: params.resolution,
+    minimaxPromptOptimizer: asBool(raw.minimaxPromptOptimizer, LEGACY_FLAT_DEFAULTS.minimaxPromptOptimizer),
+    minimaxTimeoutMs: asInt(raw.minimaxTimeoutMs, LEGACY_FLAT_DEFAULTS.minimaxTimeoutMs, 10000, 900000)
+  };
+}
 
 /** 读成普通对象（数组、null、标量一律当空对象）。 */
 function asDict(value: unknown): Record<string, unknown> {
@@ -451,7 +472,8 @@ function normalizeChannelLayer(
  *   两份 secret 各自漂移（改了主账号那个、重绘还在用旧 key）。
  * - id 固定（渠道 `ark-cn` / `mm-intl`，供应商 `ark-main` / `mm-main`），方便排错与文档引用。
  */
-function migrateFlatToChannels(flat: FlatConfig): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+function migrateFlatToChannels(raw: Record<string, unknown>): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+  const flat = legacyFlatOf(raw);
   const channels: Record<string, ChannelConfig> = {};
   const suppliers: Record<string, SupplierConfig> = {};
   const channelSecrets: Record<string, string> = {};
@@ -508,33 +530,7 @@ export function normalizeConfig(input: unknown): Config {
   // 上限必须严格大于下限，否则抠像区间为空；单独改任一项时自动让路。
   const keyHigh = Math.min(255, Math.max(keyLow + 1, asInt(raw.keyHigh, DEFAULT_CONFIG.keyHigh, 1, 255)));
 
-  // 视频参数都跟着模型走：换到 H3 之后旧的 `1080P` / `6 秒` 未必合法；
-  // 选「优云智算版 H3」时档位放宽到 1080P、4~30 秒。
-  const minimaxModel = asString(raw.minimaxModel, DEFAULT_CONFIG.minimaxModel);
-  const minimaxBaseUrl = normalizeVideoBaseUrl(asString(raw.minimaxBaseUrl, DEFAULT_CONFIG.minimaxBaseUrl)) || DEFAULT_CONFIG.minimaxBaseUrl;
-  // 时长 / 分辨率按模型收敛一次再落盘：换过模型之后，旧档位可能已经不合法了。
-  const minimaxParams = normalizeVideoParams(minimaxModel, {
-    duration: raw.minimaxDuration ?? DEFAULT_CONFIG.minimaxDuration,
-    resolution: raw.minimaxResolution ?? DEFAULT_CONFIG.minimaxResolution
-  });
-
-  const flat: FlatConfig = {
-    arkApiKey: asString(raw.arkApiKey, DEFAULT_CONFIG.arkApiKey),
-    arkBaseUrl: asString(raw.arkBaseUrl, DEFAULT_CONFIG.arkBaseUrl).replace(/\/+$/, ""),
-    arkModel: asString(raw.arkModel, DEFAULT_CONFIG.arkModel),
-    arkRedrawModel: asString(raw.arkRedrawModel, DEFAULT_CONFIG.arkRedrawModel),
-    arkSize: asString(raw.arkSize, DEFAULT_CONFIG.arkSize),
-    arkWatermark: asBool(raw.arkWatermark, DEFAULT_CONFIG.arkWatermark),
-    arkTimeoutMs: asInt(raw.arkTimeoutMs, DEFAULT_CONFIG.arkTimeoutMs, 10000, 900000),
-
-    minimaxApiKey: asString(raw.minimaxApiKey, DEFAULT_CONFIG.minimaxApiKey),
-    minimaxBaseUrl,
-    minimaxModel,
-    minimaxDuration: minimaxParams.duration,
-    minimaxResolution: minimaxParams.resolution,
-    minimaxPromptOptimizer: asBool(raw.minimaxPromptOptimizer, DEFAULT_CONFIG.minimaxPromptOptimizer),
-    minimaxTimeoutMs: asInt(raw.minimaxTimeoutMs, DEFAULT_CONFIG.minimaxTimeoutMs, 10000, 900000),
-
+  const flat: Omit<Config, "channels" | "suppliers" | "bind" | "channelSecrets" | "channelVersion"> = {
     cellWidth: asInt(raw.cellWidth, DEFAULT_CONFIG.cellWidth, 16, 2048),
     cellHeight: asInt(raw.cellHeight, DEFAULT_CONFIG.cellHeight, 16, 2048),
     frameCount: asInt(raw.frameCount, DEFAULT_CONFIG.frameCount, 1, 64),
@@ -557,13 +553,12 @@ export function normalizeConfig(input: unknown): Config {
     concurrency: asInt(raw.concurrency, DEFAULT_CONFIG.concurrency, 1, 8)
   };
 
-  // 渠道层：先把读入的结构归一化；只有「从没迁过 且 一条渠道都没有」时，
-  // 才把扁平字段折成渠道。channelVersion 一旦落盘，用户把渠道全删光也不会被重新种回来。
+  // 渠道层：**版本号低于当前值就迁移一次**，把旧版扁平字段折成渠道；之后版本号落盘，
+  // 用户把渠道全删光也不会被重新种回来。全新安装（版本 0）走的是同一条路——
+  // 于是新装也自带两条默认渠道，而不是对着一个空列表发呆。
   const layer = normalizeChannelLayer(raw);
   const channelLayer =
-    raw.channelVersion === undefined && Object.keys(layer.channels).length === 0
-      ? migrateFlatToChannels(flat)
-      : layer;
+    asInt(raw.channelVersion, 0, 0, 999) < CHANNEL_VERSION ? migrateFlatToChannels(raw) : layer;
 
   return { ...flat, ...channelLayer, channelVersion: CHANNEL_VERSION };
 }
@@ -576,135 +571,25 @@ export async function loadConfig(): Promise<Config> {
     const text = await readFile(configPath(), "utf8");
     cache = normalizeConfig(JSON.parse(text));
   } catch {
-    cache = { ...DEFAULT_CONFIG, rowOrder: [...DEFAULT_ROW_ORDER] };
+    // 没有配置文件：**也要走一遍归一化**，而不是直接拼 DEFAULT_CONFIG——
+    // 全新安装与「只有扁平字段的老配置」是同一条迁移路径，新装正是靠它拿到两条默认渠道。
+    cache = normalizeConfig({});
   }
   return cache;
 }
 
 /**
- * ── 双向投影（U1 专有，U4 删除）────────────────────────────────────────
+ * U4：`projectFlatToChannels` / `projectChannelsToFlat`（U1 的双向投影）已删除。
  *
- * 旧设置页**只写扁平字段**，新 RPC**只写渠道层**，而解析一律读渠道层。
- * 所以两边必须互为投影，否则「旧页面看着生效、其实没生效」。
+ * 它们当时存在，是因为**旧设置页只写扁平字段、新 RPC 只写渠道层，而解析一律读渠道层**
+ * ——两边必须互为投影，否则「旧页面看着生效、其实没生效」。
  *
- * 方向由「这次写的是哪一边」决定，见 `saveConfig`。
+ * 扁平字段删掉之后只剩一边，投影自然消失，`saveConfig` 回到一次普通的合并 + 归一化。
  */
-
-/** 按注册表约定，两组扁平字段各自对应的默认渠道 / 供应商 id。 */
-const IMAGE_DEFAULT_SUPPLIER = "ark-main";
-const IMAGE_DEFAULT_CHANNEL = "ark-cn";
-const VIDEO_DEFAULT_SUPPLIER = "mm-main";
-const VIDEO_DEFAULT_CHANNEL = "mm-intl";
-
-/** 扁平字段 → 默认渠道 / 供应商（旧设置页写完走这一步）。 */
-export function projectFlatToChannels(config: Config): Config {
-  const channels = { ...config.channels };
-  const suppliers = { ...config.suppliers };
-  const channelSecrets = { ...config.channelSecrets };
-  const bind: BindConfig = { image: { ...config.bind.image }, video: { ...config.bind.video } };
-
-  // ── 生图组 ──
-  const imageSupplierId = bind.image.default.supplierId || IMAGE_DEFAULT_SUPPLIER;
-  const imageChannelId = suppliers[imageSupplierId]?.channelId || IMAGE_DEFAULT_CHANNEL;
-  const imageModels: ModelEntry[] = [{ id: config.arkModel }];
-  const redraw = config.arkRedrawModel.trim();
-  if (redraw !== "" && redraw !== config.arkModel) imageModels.push({ id: redraw });
-  channels[imageChannelId] = {
-    protocol: channels[imageChannelId]?.protocol ?? "ark",
-    name: channels[imageChannelId]?.name ?? "火山方舟",
-    baseUrl: config.arkBaseUrl,
-    models: imageModels,
-    options: { size: config.arkSize, watermark: config.arkWatermark, timeoutMs: config.arkTimeoutMs }
-  };
-  suppliers[imageSupplierId] = { name: suppliers[imageSupplierId]?.name ?? "默认账号", channelId: imageChannelId };
-  if (config.arkApiKey.trim() !== "") channelSecrets[imageSupplierId] = config.arkApiKey;
-  else delete channelSecrets[imageSupplierId];
-  bind.image.default = { supplierId: imageSupplierId };
-  if (bind.image.sheet.supplierId === "") bind.image.sheet = { supplierId: imageSupplierId };
-  bind.image.redraw =
-    redraw === "" || redraw === config.arkModel
-      ? { supplierId: bind.image.redraw.supplierId || imageSupplierId }
-      : { supplierId: bind.image.redraw.supplierId || imageSupplierId, model: redraw };
-
-  // ── 视频组 ──
-  const videoSupplierId = bind.video.default.supplierId || VIDEO_DEFAULT_SUPPLIER;
-  const videoChannelId = suppliers[videoSupplierId]?.channelId || VIDEO_DEFAULT_CHANNEL;
-  channels[videoChannelId] = {
-    protocol: channels[videoChannelId]?.protocol ?? "minimax",
-    name: channels[videoChannelId]?.name ?? "MiniMax",
-    baseUrl: config.minimaxBaseUrl,
-    models: [{ id: config.minimaxModel }],
-    options: {
-      duration: config.minimaxDuration,
-      resolution: config.minimaxResolution,
-      promptOptimizer: config.minimaxPromptOptimizer,
-      timeoutMs: config.minimaxTimeoutMs
-    }
-  };
-  suppliers[videoSupplierId] = { name: suppliers[videoSupplierId]?.name ?? "默认账号", channelId: videoChannelId };
-  if (config.minimaxApiKey.trim() !== "") channelSecrets[videoSupplierId] = config.minimaxApiKey;
-  else delete channelSecrets[videoSupplierId];
-  bind.video.default = { supplierId: videoSupplierId };
-
-  return { ...config, channels, suppliers, bind, channelSecrets };
-}
-
-/** 渠道层 → 扁平字段（新 RPC 写完走这一步）。 */
-export function projectChannelsToFlat(config: Config): Config {
-  const imageSlot = config.bind.image.default;
-  const videoSlot = config.bind.video.default;
-  const imageSupplier = config.suppliers[imageSlot.supplierId];
-  const videoSupplier = config.suppliers[videoSlot.supplierId];
-  const imageChannel = imageSupplier === undefined ? undefined : config.channels[imageSupplier.channelId];
-  const videoChannel = videoSupplier === undefined ? undefined : config.channels[videoSupplier.channelId];
-  const imageOptions = imageChannel?.options ?? {};
-  const videoOptions = videoChannel?.options ?? {};
-  const num = (value: unknown, fallback: number): number =>
-    typeof value === "number" && Number.isFinite(value) ? value : fallback;
-
-  return {
-    ...config,
-    // 只有绑到东西时才回写，否则保留原状（渠道全空时不该把扁平字段清成默认值）。
-    ...(imageChannel === undefined
-      ? {}
-      : {
-          arkBaseUrl: imageChannel.baseUrl,
-          arkModel: imageSlot.model ?? imageChannel.models[0]?.id ?? config.arkModel,
-          arkRedrawModel:
-            config.bind.image.redraw.model ??
-            (config.bind.image.redraw.supplierId === imageSlot.supplierId ? config.arkRedrawModel : ""),
-          arkSize: typeof imageOptions.size === "string" ? imageOptions.size : config.arkSize,
-          arkWatermark: typeof imageOptions.watermark === "boolean" ? imageOptions.watermark : config.arkWatermark,
-          arkTimeoutMs: num(imageOptions.timeoutMs, config.arkTimeoutMs)
-        }),
-    ...(imageSupplier === undefined ? {} : { arkApiKey: config.channelSecrets[imageSlot.supplierId] ?? "" }),
-    ...(videoChannel === undefined
-      ? {}
-      : {
-          minimaxBaseUrl: videoChannel.baseUrl,
-          minimaxModel: videoSlot.model ?? videoChannel.models[0]?.id ?? config.minimaxModel,
-          minimaxDuration: num(videoOptions.duration, config.minimaxDuration),
-          minimaxResolution:
-            typeof videoOptions.resolution === "string" ? videoOptions.resolution : config.minimaxResolution,
-          minimaxPromptOptimizer:
-            typeof videoOptions.promptOptimizer === "boolean"
-              ? videoOptions.promptOptimizer
-              : config.minimaxPromptOptimizer,
-          minimaxTimeoutMs: num(videoOptions.timeoutMs, config.minimaxTimeoutMs)
-        }),
-    ...(videoSupplier === undefined ? {} : { minimaxApiKey: config.channelSecrets[videoSlot.supplierId] ?? "" })
-  };
-}
-
-/** 渠道层的四个键；`saveConfig` 用它判断「这次写的是哪一边」。 */
-const CHANNEL_LAYER_KEYS = ["channels", "suppliers", "bind", "channelSecrets"] as const;
 
 export async function saveConfig(patch: Partial<Config>): Promise<Config> {
   const current = await loadConfig();
-  const merged = { ...current, ...patch };
-  // 写的是哪一边，就把另一边同步过来。见文件头的双向投影说明。
-  const wroteChannels = CHANNEL_LAYER_KEYS.some((key) => patch[key] !== undefined);
-  const next = normalizeConfig(wroteChannels ? projectChannelsToFlat(merged) : projectFlatToChannels(merged));
+  const next = normalizeConfig({ ...current, ...patch });
   await mkdir(dataRoot(), { recursive: true });
   const target = configPath();
   const tmp = `${target}.tmp`;
@@ -722,31 +607,17 @@ export async function saveConfig(patch: Partial<Config>): Promise<Config> {
  * `bind` 要带上 `keySet` / `keyHint` / 标签，不能直接透传内部结构。
  */
 export interface ConfigView
-  extends Omit<Config, "arkApiKey" | "minimaxApiKey" | "channelSecrets" | "channels" | "suppliers" | "bind"> {
-  arkApiKeySet: boolean;
-  arkApiKeyHint: string;
-  minimaxApiKeySet: boolean;
-  minimaxApiKeyHint: string;
-}
+  extends Omit<Config, "channelSecrets" | "channels" | "suppliers" | "bind"> {}
 
 export function maskConfig(config: Config): ConfigView {
   const {
-    arkApiKey,
-    minimaxApiKey,
     channelSecrets: _channelSecrets,
     channels: _channels,
     suppliers: _suppliers,
     bind: _bind,
     ...rest
   } = config;
-  return {
-    ...rest,
-    rowOrder: [...config.rowOrder],
-    arkApiKeySet: arkApiKey.trim() !== "",
-    arkApiKeyHint: hintOf(arkApiKey),
-    minimaxApiKeySet: minimaxApiKey.trim() !== "",
-    minimaxApiKeyHint: hintOf(minimaxApiKey)
-  };
+  return { ...rest, rowOrder: [...config.rowOrder] };
 }
 
 /** 密钥提示：空 = 没配；很短 = 只说「已配置」；否则给尾 4 位。渠道视图也用它。 */

@@ -366,7 +366,7 @@ async function submitTurnVideo(projectId: string, modelOverride?: string): Promi
     const taskId = await videoEngine(target).submit({
       prompt,
       firstFrameImage: dataUri,
-      ...videoOptionsOf(target, config)
+      ...videoOptionsOf(target)
     });
     await patchProject(projectId, (current) => {
       current.turn.video = {
@@ -754,7 +754,7 @@ export function startVideos(
         const taskId = await videoEngine(target).submit({
           prompt,
           firstFrameImage: dataUri,
-          ...videoOptionsOf(target, config)
+          ...videoOptionsOf(target)
         });
         await patchProject(projectId, (current) => {
           current.videos[key] = {

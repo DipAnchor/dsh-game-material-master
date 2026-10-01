@@ -121,10 +121,13 @@ export async function createImageJob(name: string): Promise<ImageJob> {
     suffix: "",
     refs: [],
     settings: {
-      model: config.arkModel,
-      size: config.arkSize,
+      // 不钉模型：跟随「设置 → 用途绑定」的 image.default，再跟到渠道第一个模型。
+      // 任务表单里可以再指定一个（那就是四级回落的第二级）。
+      model: "",
+      // 尺寸与去水印是**渠道级**参数（渠道的 `options`），空值即让渠道说了算。
+      size: "",
       count: 1,
-      watermark: config.arkWatermark
+      watermark: false
     },
     keying: {
       enabled: false,

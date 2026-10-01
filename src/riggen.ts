@@ -601,9 +601,10 @@ export async function createRigJob(name: string): Promise<RigJob> {
     updatedAt: now,
     prompts: { sheet: "", suffix: "" },
     settings: {
-      model: config.arkModel,
-      size: config.arkSize,
-      watermark: config.arkWatermark,
+      // 不钉模型：拆件与重绘各自跟自己的用途绑定，再跟到渠道第一个模型。
+      model: "",
+      size: "",
+      watermark: false,
       gridColumns: RIG_GRID_COLUMNS,
       gridRows: RIG_GRID_ROWS,
       backgroundTolerance: 30,

@@ -54,7 +54,7 @@
 | 工具 | 作用 |
 |---|---|
 | `game_material_intake` | **固定流程第 0 步**：按真实状态算出「还缺哪些关键参数」与「必须先解决的阻塞」，并把「自动审核 / 每步人工审核」这个必问项一起交出来 |
-| `game_material_call` | 万能通道：插件界面上有的功能都能调（63 个方法，含配置、提示词、抠像参数、删除等），描述里逐个列了入参与用途 |
+| `game_material_call` | 万能通道：插件界面上有的功能都能调（103 个方法，含渠道 / 供应商 / 用途绑定、提示词、抠像参数、删除等），描述里逐个列了入参与用途 |
 | `game_material_upload` | 按**本机路径**上传素材（源图 / 参考图 / 首尾帧 / 参考视频），宿主自己读盘，不用把 base64 贴进对话 |
 | `game_material_reviewMode` | 记录用户选的审核模式，存在项目 / 任务上；界面与对话读写同一份 |
 | `game_material_status` | 读进度：项目 / 任务清单，或某个目标的阶段进度与产物 URL |
@@ -132,25 +132,53 @@ dsh plugin --profile web add /path/to/dsh-game-material-master
 
 ## 配置
 
-**设置 → 游戏素材大师**：
+**设置 → 游戏素材大师**分三块（渠道层，U1–U4 落地）：
 
-| 项 | 说明 |
+| 块 | 说明 |
 |---|---|
-| 火山方舟 API Key | 「测试连接」会**真实生成一张 1K 小图**（产生少量费用），同时验证 Key 与模型 / 接入点 |
-| 生图模型 | 默认 `doubao-seedream-4-0-250828`；也可选 4.5 / 5.0 Lite / Pro，或填自定义接入点 ID |
-| MiniMax API Key | 「测试连接」只查一个不存在的任务，**免费**，能区分 Key 无效与其它错误 |
-| 视频模型 | 默认 `MiniMax-H3`。选 H3/H3-Max 自动走 v2 协议，选 Hailuo/I2V 走 v1；**优云智算版 H3** 在同一个下拉里显式选择 |
-| Base URL | **主机根**，不含 `/v1`、`/v2`。国内站 `https://api.minimax.cn`，国际站 `https://api.minimaxi.com`。选中「优云智算版 H3」时该字段固定为 `https://cp.compshare.cn`、不可编辑 |
-| 默认参数 | 单格宽高、抽帧张数与工作尺寸、像素块边长、抠像阈值等 |
+| **渠道** | 一个 API 地址 + 一个协议 + 一组模型。协议决定「用哪套形状跟这个端点说话」（方舟 / MiniMax），模型是这个端点可用的 id 清单。可以有多条渠道 |
+| **供应商** | 一个账号 / 一把 Key，指向一条渠道。同一个渠道可以配多把 Key（多账号）。**换渠道不换 Key**——这正是 key 与 url 解耦之后才做得到的事 |
+| **用途绑定** | 四处生成各自绑到哪个供应商、以及（可选）默认用哪个模型：生图默认 / 拆件摊平图 / 部件重绘 / 视频默认 |
 
-Key 只写入本机 `<DSH_HOME>/game-material-master/config.json`，回传界面时始终脱敏（只给尾号）。
+三层的关系是 `供应商(N:1) → 渠道(1:N) → 模型`；**协议配在渠道上**（一个端点只有一种说法），
+所以模型条目里没有协议字段。渠道的 `options` 放协议私有参数（方舟的 `size` / `watermark`，
+MiniMax 的 `duration` / `resolution` / `promptOptimizer`）。
 
-> **模型是插件级设置，三个模块共用。** 「生图模型」「视频模型」只在设置页里改，
-> 图片任务 / 序列帧任务内部**不允许**再存一份自己的模型副本——模块里那两个字段是
-> 只读展示。原因：网关地址与 API Key 都是全局的，任务里若留一份旧模型快照，
-> 切换模型后就会把请求打到错误网关（实测：任务存官方 H3 + 全局切优云智算 →
-> `cp.compshare.cn/v2/…` 404）。任务在保存与提交时会自动对齐当前模型，
-> 时长 / 分辨率档位也一并按当前模型收敛。
+**解析顺序是「模型 → 渠道 → 供应商」**：先定模型，再由模型**反查**它落在哪条渠道
+（同一个模型 id 落在哪条渠道，就归那条渠道的地址、协议与密钥），最后由绑定决定用谁的 key。
+反查这一步是必须的——没有它，「任务里钉住的官方 H3」会被打到优云智算的网关上
+（历史上实测过的 `cp.compshare.cn/v2/…` 404 就是这么来的）。
+
+**模型选择是「每次执行」的**，四级回落：
+
+| 级别 | 在哪 |
+|---|---|
+| ① 本次执行 | 生成类 RPC 的 `model` 参数（界面上是模块表单里的模型下拉） |
+| ② 任务 / 项目设置 | `settings.model`（写空串＝不钉，跟着下面两级走） |
+| ③ 用途绑定 | `bind[能力][用途].model` |
+| ④ 渠道第一个模型 | `channel.models[0]` |
+
+界面上的模型下拉**按渠道分组**（`<optgroup>` 的组名就是渠道名）。视图里还有一份
+`resolved`：每条用途绑定解析后实际走哪条渠道的哪个模型——界面靠它显示「现在到底用的是
+哪条渠道」，`verify-host` 靠它断言四级回落与反查渠道。
+
+Key 只写入本机 `<DSH_HOME>/game-material-master/config.json` 的 `channelSecrets`
+（**键是供应商 id**），回传界面时整组剔除，只给 `keySet` 与尾号提示。
+
+> **U4 之后没有「扁平字段」了。** `ark*` / `minimax*` 那批字段已经从 `Config` 与
+> `maskConfig` 的视图里删除，双向投影也随之删掉（`saveConfig` 回到一次普通的合并 + 归一化）。
+> 盘上若有旧形状的 `config.json`，第一次读入时会被折成渠道 + 供应商
+> （`migrateFlatToChannels`，靠 `channelVersion` 只做一次）；**全新安装走的是同一条路**，
+> 所以新装自带两条默认渠道，而不是对着一个空列表发呆。
+
+> ⚠️ **花钱脚本还没跟上**（`e2e-8dir.mjs` / `e2e-modules.mjs` / `e2e-rig-live.mjs` /
+> `probe-redraw.mjs` / `rerun-videos.mjs`）：它们仍在读 `config.arkApiKey` / `config.arkModel` /
+> `config.minimaxModel` 这类已经删掉的字段。改法是把「读视图 / 读 config.json」换成
+> 渠道层：`getConfig()` 的 `resolved[能力][用途]` 给出 `channelId` / `model` / `baseUrl` /
+> `keySet`；需要**密钥本体**的（`probe-redraw.mjs`、`e2e-rig-live.mjs`）改用
+> `loadConfig()` 的 `channelSecrets[supplierId]`；写视频参数的（`e2e-8dir.mjs:150`）改走
+> `saveChannel` 更新渠道的 `options`。它们要真 Key 才能跑，所以**没法在本地验证**——
+> 改之前先确认你愿意为这次验证付费。
 
 ### 视频参数与模型的对应关系
 
@@ -898,7 +926,7 @@ node scripts/dsh-web-cookie.mjs 127.0.0.1:43121 --json
 | `node scripts/make-rig-fixtures.mjs <目录>` | 生成**免费**的合成部件 PNG（`--full` 出完整 16 件），让除拆件以外的整条链可以零成本测试 |
 | `node scripts/probe-redraw.mjs <部件PNG> "<提示词>"` | **花钱**：直接调生图模型重绘一个部件并打印统计（与插件共用提示词构造器）。用于排查「是模型不行还是管线不行」 |
 | `node scripts/e2e-rig-live.mjs <角色整图>` | 模块四真实链路：**真的调一次生图模型**拆件，再跑完装配/骨骼/图集（约 0.2 元） |
-| `node scripts/verify-host.mjs` | 宿主半区全链路（**285 项**）：四个模块的本地链路、**阶段①的转圈截帧（合成一段「转动」视频跑真实 ffmpeg，覆盖截帧位置、按比例换算、下游作废、切换生成方式）**、资源路由（含 `turn/` 白名单）、预览页的 `text/html`、目录穿越与 id 前缀校验 |
+| `node scripts/verify-host.mjs` | 宿主半区全链路（**328 项**）：四个模块的本地链路、**渠道层（迁移、脱敏、引用保护、四级回落、模型反查渠道、检测模型）**、**阶段①的转圈截帧（合成一段「转动」视频跑真实 ffmpeg，覆盖截帧位置、按比例换算、下游作废、切换生成方式）**、资源路由（含 `turn/` 白名单）、预览页的 `text/html`、目录穿越与 id 前缀校验 |
 | `node scripts/verify-tools.mjs` / `verify-client.mjs` / `verify-pipeline.mjs` | 对话调用面（含四个模块 status/review 的文字渲染）、浏览器半区契约（含「每个远程方法都有 api 实现」与手动装配的四条回归）、抠像回归 |
 
 
@@ -909,9 +937,9 @@ npm run build          # tsc → lib/，并剥掉浏览器束结尾的 export {}
 # 纯本地测试（不联网、不花钱）
 node scripts/verify-minimax.mjs    # MiniMax 协议层（85 项，含请求体逐字段断言）
 node scripts/verify-pipeline.mjs   # 抽帧/抠像/合成链路（40 项，含回归用例）
-node scripts/verify-host.mjs       # 宿主冒烟（285 项，真实 cordis + 真实 HTTP）
-node scripts/verify-client.mjs     # 浏览器半区契约（299 项：阶段 ctx 键必须被转发、每个生成类调用点都带 loading 反馈、转圈时间轴与八圆圈、手动装配的四个坑、拆件质检 / IK 约束组件）
-node scripts/verify-feedback.mjs   # 浏览器半区渲染（119 项：真加载 lib/client.js，断言遮罩真的出现 / 空闲时真的不出现 / 转圈模式两种生成方式与八圆圈都在 / 深链接点击真的切面板）
+node scripts/verify-host.mjs       # 宿主冒烟（328 项，真实 cordis + 真实 HTTP）
+node scripts/verify-client.mjs     # 浏览器半区契约（311 项：阶段 ctx 键必须被转发、每个生成类调用点都带 loading 反馈、转圈时间轴与八圆圈、手动装配的四个坑、拆件质检 / IK 约束组件）
+node scripts/verify-feedback.mjs   # 浏览器半区渲染（145 项：真加载 lib/client.js，断言遮罩真的出现 / 空闲时真的不出现 / 转圈模式两种生成方式与八圆圈都在 / 深链接点击真的切面板 / 设置页的渠道层三块与按渠道分组的模型下拉）
 node scripts/verify-tools.mjs      # 对话调用面（109 项：工具 schema、方法覆盖、固定流程（含阶段①生成方式必问）、审核模式、深链接契约、转圈模式的 status/review 渲染）
 node scripts/verify-live-bundle.mjs # 运行中的宿主是否已在提供新束（走 /plugins/events 拿真实 graph，再按图里的 URL 取回）
 

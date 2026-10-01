@@ -19,7 +19,6 @@ import { DEFAULT_ROW_ORDER, DEFAULT_TURN_PROMPT, DEFAULT_VIDEO_PROMPT, DIRECTION
 import { checkFfmpeg } from "./media.js";
 import {
   imageEngine,
-  imageModelCatalog,
   listProtocols,
   modelCapabilityOf,
   modelLabelOf,
@@ -29,12 +28,7 @@ import {
   protocolDefaultBaseUrl,
   resolveImageTarget,
   resolveVideoTarget,
-  videoCapabilityOf,
-  videoEndpointOf,
-  videoEngine,
-  videoGatewayVariant,
-  videoHostCatalog,
-  videoModelCatalog
+  videoEngine
 } from "./engine/index.js";
 import {
   applyTurnPicks,
@@ -227,18 +221,23 @@ export class GameStudioGateway extends TypertRemoteService {
    * `resolveTarget` 里，这里只是把它跑一遍给人看。
    */
   resolvedSlot(config: Config, capability: string, purpose: string) {
-    const target =
-      capability === "image"
-        ? resolveImageTarget(config, purpose as "default" | "sheet" | "redraw")
-        : resolveVideoTarget(config);
-    return {
-      protocol: target.protocol,
-      supplierId: target.supplierId,
-      channelId: target.channelId,
-      model: target.context.model,
-      baseUrl: target.context.baseUrl,
-      keySet: target.context.apiKey.trim() !== ""
-    };
+    try {
+      const target =
+        capability === "image"
+          ? resolveImageTarget(config, purpose as "default" | "sheet" | "redraw")
+          : resolveVideoTarget(config);
+      return {
+        protocol: target.protocol,
+        supplierId: target.supplierId,
+        channelId: target.channelId,
+        model: target.context.model,
+        baseUrl: target.context.baseUrl,
+        keySet: target.context.apiKey.trim() !== ""
+      };
+    } catch {
+      // 还没配好渠道时解析会抛错——但视图必须能正常渲染：设置页正是靠它引导用户去配的。
+      return null;
+    }
   }
   channelViewOf(config: Config) {
     const protocols = listProtocols();
@@ -296,19 +295,6 @@ export class GameStudioGateway extends TypertRemoteService {
       ...this.channelViewOf(config),
       rowOrder: [...config.rowOrder],
       defaults: { ...DEFAULT_CONFIG },
-      arkModels: imageModelCatalog(),
-      minimaxModels: videoModelCatalog(),
-      minimaxHosts: videoHostCatalog(),
-      // 「优云智算版 H3」由用户在模型下拉里显式选择，选中后网关地址/路径/档位全部跟着它走。
-      minimaxCompshareModelId: videoGatewayVariant()?.modelId ?? "",
-      minimaxCompshareBaseUrl: videoGatewayVariant()?.baseUrl ?? "",
-      // 选中优云智算版时，界面显示的 Base URL 就是插件真正会用的那个地址。
-      minimaxBaseUrl: videoEndpointOf(config.minimaxModel, config.minimaxBaseUrl).baseUrl,
-      // 优云智算网关的请求路径多一层 /minimax，界面据此展示真实端点。
-      minimaxPathPrefix: videoEndpointOf(config.minimaxModel, config.minimaxBaseUrl).pathPrefix,
-      // 分辨率档位与时长区间都跟着模型走，界面据此渲染控件；优云智算版更宽。
-      minimaxCapabilities: videoCapabilityOf(config.minimaxModel),
-      minimaxCapabilitiesByModel: Object.fromEntries(videoModelCatalog().map((preset) => [preset.id, videoCapabilityOf(preset.id)])),
       directions: DIRECTION_KEYS.map((key) => {
         const direction = directionOf(key);
         return { key, label: direction?.label ?? key, refs: direction?.refs ?? [] };
@@ -321,25 +307,17 @@ export class GameStudioGateway extends TypertRemoteService {
     return this.configView();
   }
   /**
-  * 保存配置。
-  * 约定：`arkApiKey` / `minimaxApiKey` **只有用户确实改了才带**——不带就是保持原值，
-  * 带空串才是清除。这样界面就不必把明文 key 回填到输入框里。
-  */
+   * 保存配置。
+   *
+   * U4 之后这里只剩**与渠道无关**的整批设置（画布、抠像、抽帧、行序、并发）。
+   * 地址、密钥、模型全都住在渠道层，各有各的 RPC——它们不能走这个白名单，
+   * 否则「写一条渠道」会变成整体替换、把别的渠道抹掉（这也是当初拆出
+   * `saveChannel` / `saveSupplier` / … 的原因）。
+   */
   async saveConfig(payload) {
     const input = asRecord(payload);
     const patch: any = {};
     const directKeys = [
-      "arkBaseUrl",
-      "arkModel",
-      "arkSize",
-      "arkWatermark",
-      "arkTimeoutMs",
-      "minimaxBaseUrl",
-      "minimaxModel",
-      "minimaxDuration",
-      "minimaxResolution",
-      "minimaxPromptOptimizer",
-      "minimaxTimeoutMs",
       "cellWidth",
       "cellHeight",
       "frameCount",
@@ -362,14 +340,6 @@ export class GameStudioGateway extends TypertRemoteService {
       if (input[key] !== undefined)
         patch[key] = input[key];
     }
-    if (typeof input.arkApiKey === "string")
-      patch.arkApiKey = input.arkApiKey.trim();
-    if (typeof input.minimaxApiKey === "string")
-      patch.minimaxApiKey = input.minimaxApiKey.trim();
-    if (input.clearArkApiKey === true)
-      patch.arkApiKey = "";
-    if (input.clearMinimaxApiKey === true)
-      patch.minimaxApiKey = "";
     const saved = await saveConfig(patch);
     this.ffmpegCache = undefined;
     return this.decorateConfig(saved);
@@ -481,9 +451,13 @@ export class GameStudioGateway extends TypertRemoteService {
     const config = await loadConfig();
     if (config.suppliers[id] === undefined) throw new Error(`供应商不存在：${id}`);
     const channelSecrets = { ...config.channelSecrets };
-    const apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
-    if (apiKey !== "") channelSecrets[id] = apiKey;
-    else delete channelSecrets[id];
+    // 语义与旧的两个扁平 key 一致：**不带 = 保持原值，带空串 = 清除**。
+    // 早先这里把「不带」也当成空串处理，等于每次改个名字就把密钥清掉了。
+    if (typeof input.apiKey === "string") {
+      const apiKey = input.apiKey.trim();
+      if (apiKey !== "") channelSecrets[id] = apiKey;
+      else delete channelSecrets[id];
+    }
     return this.decorateConfig(await saveConfig({ channelSecrets }));
   }
 

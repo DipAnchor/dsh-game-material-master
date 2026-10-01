@@ -32,6 +32,10 @@ import type { NodeStatus } from "./store.js";
 
 export type SequenceMode = "frames" | "reference";
 
+/** 新任务的起点值：渠道的 `options` 与所选模型的 capability 随后会收敛它们。 */
+const DEFAULT_VIDEO_DURATION = 5;
+const DEFAULT_VIDEO_RESOLUTION = "2K";
+
 export interface SequenceRef {
   file: string;
   name: string;
@@ -179,10 +183,13 @@ export async function createSequenceJob(name: string): Promise<SequenceJob> {
     suffix: "",
     refs: { referenceImages: [], referenceVideos: [] },
     settings: {
-      model: config.minimaxModel,
-      duration: config.minimaxDuration,
-      resolution: config.minimaxResolution,
-      promptOptimizer: config.minimaxPromptOptimizer,
+      // 不钉模型：跟随 bind.video.default，再跟到渠道第一个模型。
+      model: "",
+      // 时长 / 分辨率 / 提示词优化是**渠道级**参数；这里只是新任务的起点值，
+      // 之后由渠道的 `options` 与所选模型的 capability 收敛。
+      duration: DEFAULT_VIDEO_DURATION,
+      resolution: DEFAULT_VIDEO_RESOLUTION,
+      promptOptimizer: true,
       frameCount: config.frameCount,
       cellWidth: config.cellWidth,
       cellHeight: config.cellHeight,

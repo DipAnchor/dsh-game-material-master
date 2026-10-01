@@ -177,7 +177,12 @@ async function main() {
   // ── 2. 配置 ────────────────────────────────────────────────────────────
   console.log("2) 配置读写与脱敏");
   const initial = await studio.getConfig();
-  check("默认使用 Seedream 4.0", initial.arkModel === "doubao-seedream-4-0-250828", initial.arkModel);
+  const arkChannel = initial.channels.find((channel) => channel.protocol === "ark");
+  check(
+    "新装自带一条方舟渠道（默认 Seedream 4.0）",
+    arkChannel?.models.some((model) => model.id === "doubao-seedream-4-0-250828") === true,
+    JSON.stringify(arkChannel?.models)
+  );
   check("ffmpeg 探测通过", initial.ffmpeg?.ok === true, initial.ffmpeg?.version ?? initial.ffmpeg?.error);
   check("默认单格 256×256", initial.cellWidth === 256 && initial.cellHeight === 256);
   check("默认每段抽 8 帧", initial.frameCount === 8);
@@ -185,42 +190,49 @@ async function main() {
   check("默认开启自动裁剪", initial.autoCrop === true);
   check("默认抽帧工作尺寸 768", initial.workingLongEdge === 768, String(initial.workingLongEdge));
   check("默认开启背景空间分割", initial.bgTolerance === 90, String(initial.bgTolerance));
-  check("初始未配置 Key", initial.arkApiKeySet === false && initial.minimaxApiKeySet === false);
-
-  // ── 2b. 优云智算版 H3 是模型下拉里的独立选项（不由 Base URL 推断）─────
-  const compshareId = initial.minimaxCompshareModelId;
-  check("配置视图给出优云智算版模型 id", compshareId === "MiniMax-H3 优云智算", String(compshareId));
   check(
-    "模型下拉里包含优云智算版选项",
-    Array.isArray(initial.minimaxModels) && initial.minimaxModels.some((model) => model.id === compshareId),
-    JSON.stringify((initial.minimaxModels ?? []).map((model) => model.id))
+    "初始未配置 Key",
+    initial.suppliers.every((supplier) => supplier.keySet === false),
+    JSON.stringify(initial.suppliers.map((supplier) => `${supplier.id}:${supplier.keySet}`))
   );
   check(
-    "官方主机预设不再混入优云智算网关",
-    Array.isArray(initial.minimaxHosts) && initial.minimaxHosts.every((host) => host.id !== "https://cp.compshare.cn"),
-    JSON.stringify((initial.minimaxHosts ?? []).map((host) => host.id))
+    "视图里不再有扁平字段（U4 清干净了）",
+    initial.arkModel === undefined && initial.minimaxModel === undefined && initial.arkApiKeySet === undefined,
+    Object.keys(initial).filter((key) => /^ark|^minimax/i.test(key) && !/^minimax(Host|Capabilit|Compshare)/.test(key)).join(",")
   );
-  check("默认模型（官方 H3）无 /minimax 前缀", initial.minimaxPathPrefix === "");
-  check("默认 H3 能力仍是官方档位", initial.minimaxCapabilities?.resolutions?.join(",") === "2K,768P");
 
-  const cpSaved = await studio.saveConfig({ minimaxModel: compshareId });
-  check("选中优云智算版后路径前缀为 /minimax", cpSaved.minimaxPathPrefix === "/minimax", cpSaved.minimaxPathPrefix);
+  // ── 2a. 优云智算：模型 id 决定网关的那座桥（§7.1 ② 的 P6 之前仍然生效）──
+  // 它现在只活在实例里、视图不再转述，所以这里**直接问 engine**——这比「视图里有没有
+  // 这个字段」更接近真相：真正决定打到哪个地址的就是这两个函数。
+  const { videoEndpointOf, videoCapabilityOf } = await import("../lib/engine/index.js");
+  const compshareId = "MiniMax-H3 优云智算";
+  check("官方 H3 无 /minimax 前缀", videoEndpointOf("MiniMax-H3", "https://api.minimaxi.com").pathPrefix === "");
   check(
-    "选中优云智算版后能力放宽到 1080P/4~30",
-    cpSaved.minimaxCapabilities?.resolutions?.join(",") === "2K,1080P,768P" && cpSaved.minimaxCapabilities?.durationMax === 30,
-    JSON.stringify(cpSaved.minimaxCapabilities)
+    "优云智算版模型 id 决定网关与 /minimax 前缀",
+    videoEndpointOf(compshareId, "https://api.minimaxi.com").pathPrefix === "/minimax" &&
+      videoEndpointOf(compshareId, "https://api.minimaxi.com").baseUrl === "https://cp.compshare.cn",
+    JSON.stringify(videoEndpointOf(compshareId, "https://api.minimaxi.com"))
   );
-  check("选中优云智算版后视图里的 Base URL 就是它的网关", cpSaved.minimaxBaseUrl === "https://cp.compshare.cn", cpSaved.minimaxBaseUrl);
-  check("优云智算版仍按 v2 协议", cpSaved.minimaxCapabilities?.protocol === "v2");
+  check(
+    "优云智算版档位放宽到 1080P / 4~30",
+    videoCapabilityOf(compshareId).resolutions.join(",") === "2K,1080P,768P" && videoCapabilityOf(compshareId).durationMax === 30,
+    JSON.stringify(videoCapabilityOf(compshareId))
+  );
+  check("官方 H3 能力仍是官方档位", videoCapabilityOf("MiniMax-H3").resolutions.join(",") === "2K,768P");
 
-  const cpBack = await studio.saveConfig({ minimaxModel: "MiniMax-H3", minimaxBaseUrl: "https://api.minimaxi.com" });
-  check("切回官方 H3 后前缀还原为空", cpBack.minimaxPathPrefix === "");
-  check("切回官方 H3 后档位还原", cpBack.minimaxCapabilities?.resolutions?.join(",") === "2K,768P");
+  // 密钥：粒度是**供应商**，语义与旧的扁平 key 一致（不带＝保持原值，空串＝清除）。
+  const arkSupplierId = initial.bind.image.default.supplierId;
+  const keyed = await studio.saveSupplierKey({ id: arkSupplierId, apiKey: "test-ark-key-1234" });
+  const keyedSupplier = keyed.suppliers.find((supplier) => supplier.id === arkSupplierId);
+  check("保存后标记为已配置", keyedSupplier?.keySet === true);
+  check("Key 只回传尾号提示", keyedSupplier?.keyHint === "…1234", keyedSupplier?.keyHint);
+  check("返回体里没有明文 Key", JSON.stringify(keyed).includes("test-ark-key-1234") === false);
+  const kept = await studio.saveSupplierKey({ id: arkSupplierId });
+  check("不带 apiKey 的保存不会清空 Key", kept.suppliers.find((s) => s.id === arkSupplierId)?.keySet === true);
+  const cleared = await studio.saveSupplierKey({ id: arkSupplierId, apiKey: "" });
+  check("传空串即清除 Key", cleared.suppliers.find((s) => s.id === arkSupplierId)?.keySet === false);
 
-  const saved = await studio.saveConfig({ arkApiKey: "test-ark-key-1234", cellWidth: 300 });
-  check("保存后标记为已配置", saved.arkApiKeySet === true);
-  check("Key 只回传尾号提示", saved.arkApiKeyHint === "…1234", saved.arkApiKeyHint);
-  check("返回体里没有明文 Key", JSON.stringify(saved).includes("test-ark-key-1234") === false);
+  const saved = await studio.saveConfig({ cellWidth: 300 });
   check("尺寸改动已生效", saved.cellWidth === 300);
 
   const clamped = await studio.saveConfig({ keyHigh: 3, keyLow: 200, frameCount: 999, concurrency: 99 });
@@ -247,24 +259,44 @@ async function main() {
   const customConfig = normalizeConfig({ rowOrder: ["front", "back"], rowOrderVersion: ROW_ORDER_VERSION });
   check("任意自定义行序都不被改写", JSON.stringify(customConfig.rowOrder) === JSON.stringify(["front", "back"]));
 
-  const kept = await studio.saveConfig({ arkModel: "doubao-seedream-4-5-251128" });
-  check("不带 Key 的保存不会清空 Key", kept.arkApiKeySet === true);
-  const cleared = await studio.saveConfig({ clearArkApiKey: true });
-  check("clearArkApiKey 能清空 Key", cleared.arkApiKeySet === false);
+  // 渠道层迁移：老配置的扁平字段折成渠道；版本号落盘之后不再重复发生。
+  const legacyConfig = normalizeConfig({
+    arkApiKey: "sk-legacy-123456",
+    arkModel: "doubao-seedream-4-0-250828",
+    minimaxApiKey: "mm-legacy-123456",
+    minimaxModel: "MiniMax-H3"
+  });
+  check(
+    "老配置的扁平字段被折成两条渠道",
+    Object.keys(legacyConfig.channels).length === 2 && legacyConfig.channelVersion === 1,
+    JSON.stringify(Object.keys(legacyConfig.channels))
+  );
+  check(
+    "老配置的 Key 落成供应商密钥",
+    legacyConfig.channelSecrets["ark-main"] === "sk-legacy-123456" &&
+      legacyConfig.channelSecrets["mm-main"] === "mm-legacy-123456"
+  );
+  check(
+    "已迁移过的配置再归一化不会重复迁移",
+    Object.keys(normalizeConfig(legacyConfig).channels).length === 2
+  );
+  const emptied = normalizeConfig({ ...legacyConfig, channels: {}, suppliers: {}, channelSecrets: {}, bind: legacyConfig.bind });
+  check("用户手动删光渠道后不会被重新种回来", Object.keys(emptied.channels).length === 0);
 
-  // ── 2b. 渠道层：三层结构 + 双向投影 ───────────────────────────────────
-  // 这一节是 U1 的验收依据（docs/渠道层与设置页改造方案.md §9.4 的四条不变量）。
-  console.log("2b) 渠道层与双向投影");
+  // ── 2b. 渠道层：结构、脱敏与引用保护 ──────────────────────────────────
+  // U1 时这一节验的是「扁平字段与渠道互为投影」的四条不变量；U4 删掉扁平字段与投影
+  // 之后它们失去意义，这里只剩「渠道层自己该成立的事」。
+  console.log("2b) 渠道层：结构、脱敏与引用保护");
 
   const migrated = await studio.getConfig();
   const arkOriginal = migrated.channels.find((c) => c.protocol === "ark");
   const arkOriginalModels = arkOriginal.models.map((m) => m.id);
   check(
-    "迁移出 ark / minimax 两条渠道",
+    "新装就有 ark / minimax 两条渠道",
     arkOriginal !== undefined && migrated.channels.some((c) => c.protocol === "minimax"),
     JSON.stringify(migrated.channels.map((c) => `${c.id}:${c.protocol}`))
   );
-  check("迁移出对应的供应商", migrated.suppliers.length === 2, JSON.stringify(migrated.suppliers.map((s) => s.id)));
+  check("新装就有对应的供应商", migrated.suppliers.length === 2, JSON.stringify(migrated.suppliers.map((s) => s.id)));
   check(
     "三个用途绑定都指到了供应商",
     migrated.bind.image.default.supplierId !== "" &&
@@ -278,20 +310,13 @@ async function main() {
     migrated.suppliers.every((s) => typeof s.keySet === "boolean" && typeof s.keyHint === "string")
   );
   check(
-    "渠道的模型带上显示名（来自协议目录）",
-    migrated.channels.every((c) => c.models.every((m) => typeof m.label === "string" && m.label !== ""))
+    "渠道的模型带上显示名与能力（界面据此渲染控件）",
+    migrated.channels.every((c) =>
+      c.models.every((m) => typeof m.label === "string" && m.label !== "" && m.capability !== undefined)
+    )
   );
 
-  // ① 旧设置页路径：写扁平字段 → 默认渠道要跟着变
-  await studio.saveConfig({ arkModel: "doubao-seedream-4-5-251128" });
-  const flatWrite = await studio.getConfig();
-  check(
-    "① 写扁平模型后默认渠道的 models 跟着变",
-    flatWrite.channels.find((c) => c.protocol === "ark")?.models.some((m) => m.id === flatWrite.arkModel) === true,
-    JSON.stringify(flatWrite.channels.find((c) => c.protocol === "ark")?.models)
-  );
-
-  // ② 新 RPC 路径：写渠道 → 扁平字段要跟着变
+  // 写渠道只动这一条、别的原封不动——这正是它不走 `saveConfig` 白名单的原因。
   await studio.saveChannel({
     id: arkOriginal.id,
     protocol: "ark",
@@ -300,21 +325,14 @@ async function main() {
     models: ["verify-model"]
   });
   const channelWrite = await studio.getConfig();
-  check("② 写渠道后扁平 baseUrl 跟着变", channelWrite.arkBaseUrl === "https://verify.example/v1", channelWrite.arkBaseUrl);
-  check("② 写渠道后扁平 model 跟着变", channelWrite.arkModel === "verify-model", channelWrite.arkModel);
-
-  // ③ 两条路径交替走：仍然一致，且渠道不膨胀
-  await studio.saveConfig({ arkModel: "doubao-seedream-4-0-250828" });
-  await studio.saveChannel({ id: arkOriginal.id, protocol: "ark", baseUrl: "https://verify.example/v1", models: ["verify-model"] });
-  const alternating = await studio.getConfig();
-  check("③ 交替写之后渠道数量没膨胀", alternating.channels.length === 2, String(alternating.channels.length));
+  check("改一条渠道不会顺手抹掉别的渠道", channelWrite.channels.length === 2, String(channelWrite.channels.length));
   check(
-    "③ 交替写之后两边一致",
-    alternating.channels.find((c) => c.protocol === "ark")?.models.some((m) => m.id === alternating.arkModel) === true,
-    alternating.arkModel
+    "改渠道后解析立刻走到新地址（不再有第二份真源要同步）",
+    channelWrite.resolved.image.default.baseUrl === "https://verify.example/v1",
+    channelWrite.resolved.image.default.baseUrl
   );
 
-  // ④ 加第二条渠道：扁平字段仍只反映「绑定的默认」那一条
+  // 密钥：粒度是供应商，且永不回传本体。
   await studio.saveChannel({
     id: "second-ark",
     protocol: "ark",
@@ -323,14 +341,14 @@ async function main() {
     models: ["second-model"]
   });
   await studio.saveSupplier({ id: "second-account", name: "第二个账号", channelId: "second-ark" });
-  const withSecond = await studio.getConfig();
-  check("④ 加第二条渠道后扁平仍只反映默认那一条", withSecond.arkBaseUrl === "https://verify.example/v1", withSecond.arkBaseUrl);
-
-  // 密钥：只影响该供应商，且永不回传本体
   await studio.saveSupplierKey({ id: "second-account", apiKey: "sk-second-abcdef" });
   const keySet = await studio.getConfig();
   check("saveSupplierKey 只影响该供应商", keySet.suppliers.find((s) => s.id === "second-account")?.keySet === true);
-  check("给非默认供应商写密钥不动扁平字段", keySet.arkApiKeyHint === "", keySet.arkApiKeyHint);
+  check(
+    "别的供应商的密钥状态不受影响",
+    keySet.suppliers.find((s) => s.id === arkSupplierId)?.keySet === false,
+    JSON.stringify(keySet.suppliers.map((s) => `${s.id}:${s.keySet}`))
+  );
   await studio.saveSupplierKey({ id: "second-account", apiKey: "" });
   const keyCleared = await studio.getConfig();
   check("saveSupplierKey 传空串即清除", keyCleared.suppliers.find((s) => s.id === "second-account")?.keySet === false);
@@ -346,7 +364,7 @@ async function main() {
   check("删除仍被供应商指向的渠道会被拒绝", /仍被供应商指向/.test(channelRefused), channelRefused);
   let defaultRefused = "";
   try {
-    await studio.deleteSupplier({ id: withSecond.bind.image.default.supplierId });
+    await studio.deleteSupplier({ id: keySet.bind.image.default.supplierId });
   } catch (error) {
     defaultRefused = String(error?.message ?? error);
   }
@@ -373,7 +391,11 @@ async function main() {
   // 复原：后面几节的流水线断言要用原来的地址与模型
   await studio.saveChannel({ id: arkOriginal.id, protocol: "ark", name: arkOriginal.name, baseUrl: arkOriginal.baseUrl, models: arkOriginalModels });
   const restored = await studio.getConfig();
-  check("渠道复原成功（不影响后续流水线断言）", restored.arkBaseUrl === arkOriginal.baseUrl, restored.arkBaseUrl);
+  check(
+    "渠道复原成功（不影响后续流水线断言）",
+    restored.channels.find((c) => c.id === arkOriginal.id)?.baseUrl === arkOriginal.baseUrl,
+    restored.channels.find((c) => c.id === arkOriginal.id)?.baseUrl
+  );
 
   // ── 2c. 模型解析：反查渠道与四级回落 ──────────────────────────────────
   console.log("2c) 模型解析：反查渠道与四级回落");
@@ -966,6 +988,8 @@ async function main() {
   console.log("9a) 检测模型（本地假网关，不联网）");
   {
     // MiniMax 的检测**不发网络请求**：它的 /models 只列聊天模型，实例直接给内置预设 + 说明。
+    // 但它仍然要求这个供应商配了密钥——没密钥就没有「用谁的 key 去问」可言。
+    await studio.saveSupplierKey({ id: "mm-main", apiKey: "fake-mm-key" });
     const mmProbe = await studio.probeModels({ channelId: "mm-intl" });
     check(
       "MiniMax 的检测给内置预设并说明上游为什么不适用",
