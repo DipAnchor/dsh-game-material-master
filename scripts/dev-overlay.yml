@@ -18,7 +18,10 @@
 - insert:
     - id: gmm-dev-hmr
       name: '@deepseek-ai/cordis-plugin-hmr'
+      # ⚠️ 这个路径**是机器相关的**：它必须指向你自己那份 checkout 的 `lib/`。
+      # 换机器 / 换 clone 位置都要改，改错了的表现是「HMR 起来了但改代码不生效」
+      # ——它不会报错，只是监听了一个不存在的目录。
       config:
-        base: file:///D:/Workspace/myworks/dsh-game-material-master/lib
+        base: file:///G:/p-ai/works/game-material-master/dsh-game-material-master/lib
         root: ["."]
         debounce: 150
