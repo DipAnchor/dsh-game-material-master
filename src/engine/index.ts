@@ -14,8 +14,9 @@
  * 这一层只做两件事：把配置翻译成实例上下文、把能力转发给实例。厂商名、协议、
  * 参数整形都不在这里——所以调用方以后换成别的生图服务时不用改。
  *
- * P0 阶段每个能力只有唯一实现（方舟 / MiniMax），实例 id 先写死；等渠道配置
- * 落地后改由渠道决定，届时这里会多一个「按 id 选实例」的入参。
+ * 实例由**渠道的协议**决定：`resolveImageTarget` / `resolveVideoTarget` 把配置解析成
+ * 「走哪个协议 + 这次调用用什么上下文」，门面再拿协议 id 去注册表取实例。
+ * 所以这里不再有写死的厂商 id。
  */
 
 import type { BindSlot, Config, ImagePurpose } from "../config.js";
@@ -27,6 +28,7 @@ import type {
   ImageRequest,
   ImageResult,
   InstanceContext,
+  ModelProbeResult,
   VideoEndpoint,
   VideoInstance,
   VideoParams,
@@ -250,18 +252,67 @@ function defaultVideoInstance(): VideoInstance {
   return listVideoInstances()[0]!;
 }
 
-/** 协议目录：供界面生成「接口协议」下拉。 */
+/** 协议目录：供界面生成「接口协议」下拉与「添加提供方」的预设。 */
 export interface ProtocolEntry {
   id: string;
   label: string;
   capability: "image" | "video";
+  /** 新建渠道时预填的地址。 */
+  defaultBaseUrl: string;
+  /** 可选主机（界面拿它做 datalist 提示）；没有就是空数组。 */
+  hosts: readonly CatalogEntry[];
+  /** 本机内置的模型目录：不知道该填哪个模型时从这里挑。 */
+  presets: readonly CatalogEntry[];
+  /** 是否支持向上游探测模型清单。 */
+  probeable: boolean;
 }
 
 export function listProtocols(): readonly ProtocolEntry[] {
   return [
-    ...listImageInstances().map((instance) => ({ id: instance.id, label: instance.label, capability: "image" as const })),
-    ...listVideoInstances().map((instance) => ({ id: instance.id, label: instance.label, capability: "video" as const }))
+    ...listImageInstances().map((instance) => ({
+      id: instance.id,
+      label: instance.label,
+      capability: "image" as const,
+      defaultBaseUrl: instance.defaultBaseUrl,
+      hosts: [] as readonly CatalogEntry[],
+      presets: instance.modelCatalog(),
+      probeable: typeof instance.listModels === "function"
+    })),
+    ...listVideoInstances().map((instance) => ({
+      id: instance.id,
+      label: instance.label,
+      capability: "video" as const,
+      defaultBaseUrl: instance.defaultBaseUrl,
+      hosts: instance.hostCatalog(),
+      presets: instance.modelCatalog(),
+      probeable: typeof instance.listModels === "function"
+    }))
   ];
+}
+
+/** 某个协议的代表性地址：新建渠道预填、`saveChannel` 兜底都用它。 */
+export function protocolDefaultBaseUrl(protocol: string): string | undefined {
+  return listProtocols().find((entry) => entry.id === protocol)?.defaultBaseUrl;
+}
+
+/**
+ * 让某个协议去探一次模型清单。
+ *
+ * 协议不存在、或它压根不支持（没实现 `listModels`）时抛错——由调用方翻译成
+ * 用户看得懂的话。探测本身失败（Key 不对 / 地址不对）也抛错，界面照原样显示。
+ */
+export async function probeProtocolModels(protocol: string, ctx: InstanceContext): Promise<ModelProbeResult> {
+  const image = listImageInstances().find((instance) => instance.id === protocol);
+  if (image !== undefined) {
+    if (image.listModels === undefined) throw new Error(`协议「${image.label}」不支持检测模型清单`);
+    return image.listModels(ctx);
+  }
+  const video = listVideoInstances().find((instance) => instance.id === protocol);
+  if (video !== undefined) {
+    if (video.listModels === undefined) throw new Error(`协议「${video.label}」不支持检测模型清单`);
+    return video.listModels(ctx);
+  }
+  throw new Error(`未知协议：${protocol}`);
 }
 
 /** 某个协议下已知模型的显示名（未知 id 返回 undefined，交给调用方回落）。 */

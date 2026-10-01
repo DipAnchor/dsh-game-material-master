@@ -1053,7 +1053,7 @@ section("设置页：渠道 / 供应商 / 用途绑定");
     }
   };
   // Hook 槽位顺序：0 config / 1 notice / 2 testing / 3 openChannel / 4 channelDraft /
-  // 5 openSupplier / 6 supplierDraft / 7 keyDrafts / 8 modelDraft。
+  // 5 openSupplier / 6 supplierDraft / 7 keyDrafts / 8 modelDraft / 9 candidates。
   const renderSettings = (slots) => {
     HOOK.slots = slots;
     HOOK.cursor = 0;
@@ -1074,6 +1074,10 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   check("绑定下拉把供应商与它所属的渠道写在一起", page.includes("方舟默认账号 · 火山方舟"));
   check("未配置密钥的供应商在下拉里被标出来", page.includes("MiniMax 默认账号 · MiniMax 国际站（未配置密钥）"));
   check("默认不展开任何编辑器", page.includes("保存渠道") === false && page.includes("保存供应商") === false);
+  check(
+    "「添加提供方」按协议各给一个按钮",
+    page.includes("添加 火山方舟 Seedream") && page.includes("添加 MiniMax")
+  );
 
   // 展开渠道编辑器：字段、模型目录、保存/取消都要出现
   const editing = settingsText(
@@ -1095,6 +1099,47 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
   check("模型目录列出已有模型并可移除", editing.includes("模型一（m1）") && editing.includes("移除"));
   check("模型目录可以添加模型", editing.includes("添加模型"));
+  check(
+    "编辑器里有「从内置预设挑选」与「检测上游模型」",
+    editing.includes("从内置预设挑选") && editing.includes("检测上游模型")
+  );
+  check("已保存的渠道不显示「先保存」提示", editing.includes("检测需要先保存渠道") === false);
+  const newChannel = settingsText(
+    renderSettings([
+      fakeConfig,
+      null,
+      null,
+      "__new__",
+      { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }
+    ])
+  );
+  check("草稿还没有 id 时提示检测要先保存渠道", newChannel.includes("检测需要先保存渠道"));
+
+  // 候选清单：勾选几个、显示已勾选数量
+  const withCandidates = settingsText(
+    renderSettings([
+      fakeConfig,
+      null,
+      null,
+      "ark-cn",
+      { id: "ark-cn", protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [] },
+      null,
+      null,
+      {},
+      { id: "", label: "" },
+      {
+        note: "本机内置的预设目录（不联网）",
+        models: [
+          { id: "m1", label: "模型一" },
+          { id: "m2", label: "m2" }
+        ],
+        picked: { m1: true }
+      }
+    ])
+  );
+  check("候选清单报出条数与来源", withCandidates.includes("候选 2 个") && withCandidates.includes("本机内置的预设目录（不联网）"));
+  check("候选清单按勾选数量给按钮", withCandidates.includes("加入勾选的 1 个"));
+  check("候选里显示名与 id 一起给出", withCandidates.includes("模型一（m1）"));
 
   // 展开供应商编辑器：密钥区只在「编辑已有供应商」时出现
   const supplierEditing = settingsText(

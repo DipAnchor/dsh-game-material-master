@@ -23,6 +23,8 @@ import {
   listProtocols,
   modelLabelOf,
   normalizeVideoParams,
+  probeProtocolModels,
+  protocolDefaultBaseUrl,
   resolveImageTarget,
   resolveVideoTarget,
   videoCapabilityOf,
@@ -367,7 +369,8 @@ export class GameStudioGateway extends TypertRemoteService {
     const config = await loadConfig();
     const protocol = asString(input.protocol, "").trim();
     if (!isProtocolId(protocol)) throw new Error(`未知协议：${protocol}`);
-    const baseUrl = asString(input.baseUrl, "").trim().replace(/\/+$/, "");
+    // 地址留空就回落到协议的代表性地址，「添加提供方」因此可以一步新建。
+    const baseUrl = (asString(input.baseUrl, "").trim() || protocolDefaultBaseUrl(protocol) || "").replace(/\/+$/, "");
     if (baseUrl === "") throw new Error("Base URL 不能为空");
     const models = modelEntriesOf(input.models);
     if (models.length === 0) throw new Error("至少配置一个模型");
@@ -470,6 +473,52 @@ export class GameStudioGateway extends TypertRemoteService {
       throw new Error(`没有这个用途绑定：${capability}/${purpose}`);
     }
     return this.decorateConfig(await saveConfig({ bind }));
+  }
+
+  /**
+   * 检测一个渠道能用的模型。
+   *
+   * 结果只是**候选**，绝不自动写进配置：上游清单里可能有这个插件用不了的模型，
+   * 也可能（MiniMax）列的压根不是这一路的模型——那种情况由 `note` 说清楚。
+   *
+   * 密钥取自 `supplierId`；不给就找一个「有密钥且指向这个渠道」的供应商。
+   */
+  async probeModels(payload) {
+    const input = asRecord(payload);
+    const config = await loadConfig();
+    const channelId = asString(input.channelId, "").trim();
+    const saved = channelId === "" ? undefined : config.channels[channelId];
+    const protocol = asString(input.protocol, "").trim() || saved?.protocol || "";
+    if (protocol === "") throw new Error("还没有确定协议，无法检测");
+    const baseUrl = (
+      asString(input.baseUrl, "").trim() ||
+      saved?.baseUrl ||
+      protocolDefaultBaseUrl(protocol) ||
+      ""
+    ).replace(/\/+$/, "");
+    if (baseUrl === "") throw new Error("还没有可用的地址：请先填 Base URL");
+
+    const wanted = asString(input.supplierId, "").trim();
+    const usable = Object.entries(config.suppliers).filter(
+      ([id, supplier]) =>
+        (saved === undefined || supplier.channelId === channelId) && (config.channelSecrets[id] ?? "").trim() !== ""
+    );
+    const supplierId = wanted !== "" ? wanted : usable[0]?.[0] ?? "";
+    if (supplierId === "") {
+      throw new Error("检测需要一把 API 密钥：请先在「供应商」里建一个账号并配好密钥");
+    }
+    const apiKey = config.channelSecrets[supplierId] ?? "";
+    if (apiKey.trim() === "") throw new Error(`供应商「${supplierId}」还没有密钥`);
+
+    // 探测只是问一句「有哪些模型」，用不着动辄三分钟的生成超时。
+    const result = await probeProtocolModels(protocol, { baseUrl, apiKey, model: "", timeoutMs: 30000, options: {} });
+    return {
+      protocol,
+      baseUrl,
+      supplierId,
+      models: result.models.map((model) => ({ id: model.id, label: model.label })),
+      note: result.note ?? ""
+    };
   }
   /**
    * 浏览器半区上报自己的 `location.origin`。

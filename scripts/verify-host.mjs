@@ -64,10 +64,10 @@ async function main() {
   check("注册了一条 prefix 路由", captured.routes.length === 1 && captured.routes[0].kind === "prefix", JSON.stringify(captured.routes.map((r) => r.path)));
 
   const invocations = captured.manifest?.invocations ?? [];
-  // 97 → 104（U1）→ 102（U2）：U1 加了 7 个渠道层方法；U2 退役了 testArk / testMinimax
-  // ——「测试连接」的粒度变成供应商（一次真实调用必须有 key，只有渠道测不了）。
-  // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2、§4.7 与 §9。
-  check("manifest 方法数为 102", invocations.length === 102, `实际 ${invocations.length}`);
+  // 97 → 104（U1）→ 102（U2 前半）→ 103（U2 后半）：U1 加了 7 个渠道层方法；U2 退役了
+  // testArk / testMinimax（「测试连接」的粒度变成供应商）；U2 后半加了 probeModels（检测模型）。
+  // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2、§4.4、§4.7 与 §9。
+  check("manifest 方法数为 103", invocations.length === 103, `实际 ${invocations.length}`);
   const ids = new Set(invocations.map((i) => i.id));
   check("方法 id 唯一", ids.size === invocations.length);
   check("所有方法都声明在 gameStudio 服务下", invocations.every((i) => i.service === "gameStudio" && i.namespace === "gameStudio"));
@@ -891,6 +891,12 @@ async function main() {
 
   const fakeGateway = createServer((req, res) => {
     req.resume();
+    // 只给「检测模型」留一条成功路径；其余一律 401，好让鉴权失败也真的被走到。
+    if ((req.url ?? "").endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "gateway-model-a" }, { id: "gateway-model-b" }] }));
+      return;
+    }
     res.writeHead(401, { "content-type": "application/json" });
     res.end(JSON.stringify({ base_resp: { status_code: 1004, status_msg: "invalid api key (verify)" } }));
   });
@@ -900,6 +906,61 @@ async function main() {
     minimaxApiKey: "fake-key-for-verification",
     minimaxBaseUrl: `http://127.0.0.1:${gatewayPort}`
   });
+
+  console.log("9a) 检测模型（本地假网关，不联网）");
+  {
+    // MiniMax 的检测**不发网络请求**：它的 /models 只列聊天模型，实例直接给内置预设 + 说明。
+    const mmProbe = await studio.probeModels({ channelId: "mm-intl" });
+    check(
+      "MiniMax 的检测给内置预设并说明上游为什么不适用",
+      mmProbe.models.length > 0 && /只列聊天模型/.test(mmProbe.note),
+      mmProbe.note
+    );
+    check(
+      "检测结果带协议与地址",
+      mmProbe.protocol === "minimax" && mmProbe.baseUrl !== "",
+      `${mmProbe.protocol} ${mmProbe.baseUrl}`
+    );
+
+    // 方舟的检测走真的 GET /models。用一次性渠道与供应商，不去动前面测试的状态。
+    await studio.saveChannel({
+      id: "probe-ark",
+      protocol: "ark",
+      name: "探测用渠道",
+      baseUrl: `http://127.0.0.1:${gatewayPort}`,
+      models: ["placeholder"]
+    });
+    await studio.saveSupplier({ id: "probe-account", name: "探测账号", channelId: "probe-ark" });
+    await expectThrow(
+      "没有密钥时检测被挡下并说清怎么办",
+      () => studio.probeModels({ channelId: "probe-ark" }),
+      "检测需要一把 API 密钥"
+    );
+
+    await studio.saveSupplierKey({ id: "probe-account", apiKey: "fake-probe-key" });
+    const arkProbe = await studio.probeModels({ channelId: "probe-ark" });
+    check(
+      "方舟的检测解析 data[].id",
+      JSON.stringify(arkProbe.models.map((model) => model.id)) === JSON.stringify(["gateway-model-a", "gateway-model-b"]),
+      JSON.stringify(arkProbe.models.map((model) => model.id))
+    );
+    check("上游清单里没见过的模型用 id 当显示名", arkProbe.models[0].label === "gateway-model-a", arkProbe.models[0].label);
+    check("检测用的供应商被回传（便于界面解释用了哪把 key）", arkProbe.supplierId === "probe-account", arkProbe.supplierId);
+    await expectThrow(
+      "未知协议被拒绝",
+      () => studio.probeModels({ protocol: "nope", baseUrl: "http://127.0.0.1:1", supplierId: "probe-account" }),
+      "未知协议"
+    );
+
+    await studio.deleteSupplier({ id: "probe-account" });
+    await studio.deleteChannel({ id: "probe-ark" });
+    const afterProbe = await studio.getConfig();
+    check(
+      "探测用完的渠道与供应商都清掉了",
+      afterProbe.channels.length === 2 && afterProbe.suppliers.length === 2,
+      `${afterProbe.channels.length} / ${afterProbe.suppliers.length}`
+    );
+  }
 
   try {
     // 批量提交带 regenerate 会把八段视频全重跑一遍（真金白银），必须直接拒绝。

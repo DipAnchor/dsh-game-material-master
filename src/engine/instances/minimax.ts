@@ -29,6 +29,7 @@ import type {
   CapabilityDescriptor,
   CatalogEntry,
   InstanceContext,
+  ModelProbeResult,
   VideoEndpoint,
   VideoInstance,
   VideoParams
@@ -58,6 +59,19 @@ export const minimaxVideoInstance: VideoInstance = {
   kind: "video",
   id: "minimax",
   label: "MiniMax",
+  defaultBaseUrl: MINIMAX_HOST_PRESETS[0]!.id,
+
+  /**
+   * MiniMax 的 `/models` 只列**聊天**模型，视频模型不在里面——照着它填只会得到
+   * 一堆用不了的 id。所以这里不探测上游，直接把本机内置的预设目录给出去，
+   * 并用 `note` 说清「这不是从上游拉来的」。
+   */
+  async listModels(): Promise<ModelProbeResult> {
+    return {
+      models: [...MINIMAX_MODEL_PRESETS],
+      note: "MiniMax 的 /models 只列聊天模型，视频模型不在其中；这里是本机内置的预设目录"
+    };
+  },
 
   capabilityOf(model: string): CapabilityDescriptor {
     const capability = capabilityOf(model);

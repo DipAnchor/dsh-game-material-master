@@ -41,6 +41,13 @@ const bindSupplierSchema = z.object({
   supplierId: z.string(),
   model: z.string().optional()
 });
+/** 检测模型：给 `channelId`，或给 `protocol`/`baseUrl` 在保存之前先探一次。 */
+const probeModelsSchema = z.object({
+  channelId: z.string().optional(),
+  protocol: z.string().optional(),
+  baseUrl: z.string().optional(),
+  supplierId: z.string().optional()
+});
 
 const createProjectSchema = z.object({ name: z.string().optional() });
 const projectIdSchema = z.object({ projectId: z.string() });
@@ -527,6 +534,7 @@ export const METHODS: MethodSpec[] = [
   { method: "deleteSupplier", payload: channelIdSchema, result: configViewSchema },
   { method: "saveSupplierKey", payload: saveSupplierKeySchema, result: configViewSchema },
   { method: "bindSupplier", payload: bindSupplierSchema, result: configViewSchema },
+  { method: "probeModels", payload: probeModelsSchema, result: jsonObject },
   // 浏览器半区在挂载时上报 origin，供宿主拼深链接；不是用户可调用的功能。
   { method: "reportClientOrigin", payload: reportOriginSchema, result: okSchema, clientOnly: true },
 

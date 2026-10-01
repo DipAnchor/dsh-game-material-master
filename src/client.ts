@@ -45,6 +45,7 @@
       ["deleteSupplier", true],
       ["saveSupplierKey", true],
       ["bindSupplier", true],
+      ["probeModels", true],
       ["listProjects", false],
       ["createProject", true],
       ["getProject", true],
@@ -8023,6 +8024,8 @@
       const [supplierDraft, setSupplierDraft] = React.useState(null);
       const [keyDrafts, setKeyDrafts] = React.useState({});
       const [modelDraft, setModelDraft] = React.useState({ id: "", label: "" });
+      // 模型候选：`null` = 没在挑；否则是一份可勾选的清单（内置预设 或 上游检测结果）。
+      const [candidates, setCandidates] = React.useState(null);
 
       const load = React.useCallback(async () => {
         if (api === undefined) return;
@@ -8059,12 +8062,50 @@
       const channelOf = (id) => channels.find((channel) => channel.id === id);
       const channelName = (id) => channelOf(id)?.name ?? id;
       const protocolLabel = (id) => protocols.find((entry) => entry.id === id)?.label ?? id;
+      const presetOf = (id) => protocols.find((entry) => entry.id === id);
+
+      /** 「添加提供方」：按协议预填地址与内置模型目录，一步就能用。 */
+      const openChannelFromPreset = (entry) => {
+        setOpenChannel("__new__");
+        setOpenSupplier(null);
+        setModelDraft({ id: "", label: "" });
+        setCandidates(null);
+        setChannelDraft({
+          id: "",
+          protocol: entry.id,
+          name: entry.label,
+          baseUrl: entry.defaultBaseUrl,
+          models: entry.presets.map((model) => ({ id: model.id, label: model.label }))
+        });
+      };
+
+      /** 把勾选的候选并进渠道草稿（按 id 去重）。 */
+      const mergeCandidates = () => {
+        if (candidates === null || channelDraft === null) return;
+        const merged = [...channelDraft.models];
+        for (const model of candidates.models) {
+          if (candidates.picked[model.id] !== true) continue;
+          if (merged.some((entry) => entry.id === model.id)) continue;
+          merged.push({ id: model.id, label: model.label });
+        }
+        setChannelDraft({ ...channelDraft, models: merged });
+        setCandidates(null);
+      };
+      const pickedCount =
+        candidates === null ? 0 : candidates.models.filter((model) => candidates.picked[model.id] === true).length;
 
       /** 打开渠道编辑器（新建时先按第一个协议预填）。 */
       const openChannelEditor = (channel) => {
+        setCandidates(null);
         if (channel === null) {
           const first = protocols[0];
-          setChannelDraft({ id: "", protocol: first?.id ?? "", name: "", baseUrl: "", models: [] });
+          setChannelDraft({
+            id: "",
+            protocol: first?.id ?? "",
+            name: "",
+            baseUrl: first?.defaultBaseUrl ?? "",
+            models: []
+          });
           setOpenChannel("__new__");
         } else {
           setChannelDraft({
@@ -8189,7 +8230,14 @@
             `${channels.length} 个渠道 · ${channels.reduce((total, channel) => total + channel.models.length, 0)} 个模型。` +
               "一个渠道＝一个 API 地址 + 一个协议 + 一组模型；密钥属于下面的「供应商」。"
           ),
-          h("div", { className: "SPR_toolbar" }, h(Btn, { onClick: () => openChannelEditor(null) }, "新增渠道")),
+          h(
+            "div",
+            { className: "SPR_toolbar" },
+            ...protocols.map((entry) =>
+              h(Btn, { key: entry.id, onClick: () => openChannelFromPreset(entry) }, `添加 ${entry.label}`)
+            ),
+            h(Btn, { onClick: () => openChannelEditor(null) }, "自定义渠道")
+          ),
           channels.length === 0 ? h("p", { className: "SPR_hint" }, "还没有渠道。") : null,
           ...channels.map((channel) =>
             h(
@@ -8232,7 +8280,18 @@
                     {
                       className: "SPR_input",
                       value: channelDraft.protocol,
-                      onChange: (event) => setChannelDraft({ ...channelDraft, protocol: event.target.value })
+                      onChange: (event) => {
+                        const next = event.target.value;
+                        // 地址还停在旧协议的默认值上就跟着换；用户自己改过就保留。
+                        const previousDefault = presetOf(channelDraft.protocol)?.defaultBaseUrl ?? "";
+                        const keep = channelDraft.baseUrl !== "" && channelDraft.baseUrl !== previousDefault;
+                        setCandidates(null);
+                        setChannelDraft({
+                          ...channelDraft,
+                          protocol: next,
+                          baseUrl: keep ? channelDraft.baseUrl : presetOf(next)?.defaultBaseUrl ?? ""
+                        });
+                      }
                     },
                     protocols.map((entry) =>
                       h("option", { key: entry.id, value: entry.id }, `${entry.label}（${entry.capability === "image" ? "生图" : "图生视频"}）`)
@@ -8286,6 +8345,95 @@
                     "添加模型"
                   )
                 ),
+                h(
+                  "div",
+                  { className: "SPR_toolbar" },
+                  h(
+                    Btn,
+                    {
+                      onClick: () => {
+                        const preset = presetOf(channelDraft.protocol);
+                        setCandidates({
+                          note: "本机内置的预设目录（不联网）",
+                          models: (preset?.presets ?? []).map((model) => ({ id: model.id, label: model.label })),
+                          picked: {}
+                        });
+                      }
+                    },
+                    "从内置预设挑选"
+                  ),
+                  h(
+                    BusyBtn,
+                    {
+                      busy: testing === "probe",
+                      busyText: "正在检测…",
+                      disabled: testing !== null || channelDraft.id === "",
+                      onClick: async () => {
+                        setTesting("probe");
+                        await run(
+                          async () => {
+                            const result = await api.probeModels({
+                              channelId: channelDraft.id,
+                              protocol: channelDraft.protocol,
+                              baseUrl: channelDraft.baseUrl
+                            });
+                            setCandidates({
+                              note: result.note === "" ? `来自 ${result.baseUrl} 的上游清单` : result.note,
+                              models: result.models,
+                              picked: {}
+                            });
+                          },
+                          "检测完成，勾选后加入目录"
+                        );
+                        setTesting(null);
+                      }
+                    },
+                    "检测上游模型"
+                  ),
+                  channelDraft.id === ""
+                    ? h("span", { className: "SPR_fieldLabel" }, "检测需要先保存渠道，再到「供应商」里配一把密钥")
+                    : null
+                ),
+                candidates === null
+                  ? null
+                  : h(
+                      "div",
+                      { className: "SPR_fields" },
+                      h(
+                        "span",
+                        { className: "SPR_fieldLabel" },
+                        `候选 ${candidates.models.length} 个 · ${candidates.note}`
+                      ),
+                      candidates.models.length === 0
+                        ? h("span", { className: "SPR_fieldLabel" }, "上游没有返回任何模型，请手动填 id")
+                        : null,
+                      ...candidates.models.map((model) =>
+                        h(
+                          "label",
+                          { className: "SPR_keyRow", key: model.id },
+                          h("input", {
+                            type: "checkbox",
+                            checked: candidates.picked[model.id] === true,
+                            onChange: (event) =>
+                              setCandidates({
+                                ...candidates,
+                                picked: { ...candidates.picked, [model.id]: event.target.checked }
+                              })
+                          }),
+                          h(
+                            "span",
+                            { className: "SPR_fieldLabel" },
+                            model.label === model.id ? model.id : `${model.label}（${model.id}）`
+                          )
+                        )
+                      ),
+                      h(
+                        "div",
+                        { className: "SPR_toolbar" },
+                        h(Btn, { disabled: pickedCount === 0, onClick: mergeCandidates }, `加入勾选的 ${pickedCount} 个`),
+                        h(Btn, { onClick: () => setCandidates(null) }, "取消")
+                      )
+                    ),
                 ...channelDraft.models.map((model, index) =>
                   h(
                     "div",
@@ -8619,6 +8767,7 @@
         deleteSupplier: (payload) => call("deleteSupplier", payload),
         saveSupplierKey: (payload) => call("saveSupplierKey", payload),
         bindSupplier: (payload) => call("bindSupplier", payload),
+        probeModels: (payload) => call("probeModels", payload),
         listProjects: () => call("listProjects"),
         createProject: (payload) => call("createProject", payload),
         getProject: (projectId) => call("getProject", { projectId }),

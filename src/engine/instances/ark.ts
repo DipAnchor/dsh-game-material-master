@@ -6,11 +6,21 @@
  * 一律留在 ark.ts 里，本文件不复制任何逻辑——所以 ark.ts 可以原样不动。
  */
 
-import { generateImage, testArk, type ArkResult } from "../../ark.js";
-import type { CapabilityDescriptor, CatalogEntry, ImageInstance, ImageResult, InstanceContext } from "../types.js";
+import { generateImage, listArkModels, testArk, type ArkResult } from "../../ark.js";
+import type {
+  CapabilityDescriptor,
+  CatalogEntry,
+  ImageInstance,
+  ImageResult,
+  InstanceContext,
+  ModelProbeResult
+} from "../types.js";
 
 /** ark.ts 明确接受的尺寸档位；也接受显式 `宽x高`。 */
 const ARK_SIZES = ["1K", "2K", "4K"];
+
+/** 协议默认地址：新建渠道时预填。 */
+const ARK_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 
 /**
  * 可选模型目录。原先放在 config.ts，现在归实例所有——「这家厂商有哪些模型」
@@ -34,10 +44,19 @@ export const arkImageInstance: ImageInstance = {
   kind: "image",
   id: "ark",
   label: "火山方舟 Seedream",
+  defaultBaseUrl: ARK_DEFAULT_BASE_URL,
 
   capabilityOf: () => CAPABILITY,
 
   modelCatalog: () => ARK_MODEL_PRESETS,
+
+  async listModels(ctx: InstanceContext): Promise<ModelProbeResult> {
+    const ids = await listArkModels({ baseUrl: ctx.baseUrl, apiKey: ctx.apiKey, timeoutMs: ctx.timeoutMs });
+    // 上游清单只有 id，没有中文名：能用本地预设补就补，补不到就直接显示 id。
+    return {
+      models: ids.map((id) => ({ id, label: ARK_MODEL_PRESETS.find((preset) => preset.id === id)?.label ?? id }))
+    };
+  },
 
   async generate(ctx: InstanceContext, req, signal): Promise<ImageResult> {
     // 模型可以在请求里单指（部件重绘就靠这个换模型）；否则用渠道默认。

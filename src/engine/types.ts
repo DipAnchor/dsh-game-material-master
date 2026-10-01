@@ -59,6 +59,18 @@ export interface CatalogEntry {
 }
 
 /**
+ * 「检测模型」的结果。
+ *
+ * 探测不到**不是错误**：上游可能没有 `/models`，也可能有但列的不是这一路的模型
+ * （MiniMax 的 `/models` 只列聊天模型）。那种情况用 `note` 说清原因，让界面
+ * 把话说给用户听，而不是抛一个红字让用户以为是自己配错了。
+ */
+export interface ModelProbeResult {
+  models: CatalogEntry[];
+  note?: string;
+}
+
+/**
  * 视频参数。存储与提交都要按模型收敛，所以单独抽出来。
  *
  * 入参刻意是 `unknown`：这三个调用点面对的是配置文件内容与界面输入，
@@ -100,9 +112,13 @@ export interface ImageInstance {
   readonly kind: "image";
   readonly id: string;
   readonly label: string;
+  /** 协议的代表性地址：新建渠道时预填。 */
+  readonly defaultBaseUrl: string;
   capabilityOf(model: string): CapabilityDescriptor;
   /** 该实例对外提供的模型目录，界面下拉直接用。 */
   modelCatalog(): readonly CatalogEntry[];
+  /** 向上游要一份模型清单（可选能力，见 `ModelProbeResult`）。 */
+  listModels?(ctx: InstanceContext): Promise<ModelProbeResult>;
   generate(ctx: InstanceContext, req: ImageRequest, signal?: AbortSignal): Promise<ImageResult>;
   test(ctx: InstanceContext): Promise<{ ok: true; model: string; bytes: number; ext: string }>;
 }
@@ -140,12 +156,15 @@ export interface VideoInstance {
   readonly kind: "video";
   readonly id: string;
   readonly label: string;
+  /** 协议的代表性地址：新建渠道时预填。 */
+  readonly defaultBaseUrl: string;
   capabilityOf(model: string): CapabilityDescriptor;
   /**
    * 按模型能力收敛时长 / 分辨率：入参可以是脏的（配置文件里的原始值），
    * 出参一定是合法值。存储与提交都要过这一道，否则换模型会留下非法档位。
    */
-  normalizeParams(model: string, params: VideoParams): { duration: number; resolution: string };  /** 把用户填的主机地址收敛成主机根（去掉尾斜杠与 `/v1`、`/v2`）。 */
+  normalizeParams(model: string, params: VideoParams): { duration: number; resolution: string };
+  /** 把用户填的主机地址收敛成主机根（去掉尾斜杠与 `/v1`、`/v2`）。 */
   normalizeBaseUrl(url: string): string;
   /** 该模型实际会用的端点（网关覆盖 + 路径前缀）。 */
   endpointOf(model: string, baseUrl: string): VideoEndpoint;
@@ -153,6 +172,8 @@ export interface VideoInstance {
   modelCatalog(): readonly CatalogEntry[];
   /** 该实例可选的主机目录。 */
   hostCatalog(): readonly CatalogEntry[];
+  /** 向上游要一份模型清单（可选能力，见 `ModelProbeResult`）。 */
+  listModels?(ctx: InstanceContext): Promise<ModelProbeResult>;
   /**
    * 该实例的「网关变体」（若有）：同一个模型走第三方网关时，设置页需要知道
    * 触发它的模型 id 与实际主机。渠道模型落地后，这会退化成一个普通渠道。
