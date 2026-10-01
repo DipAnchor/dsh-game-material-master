@@ -32,6 +32,7 @@ export function isLegacyRowOrder(order: unknown): boolean {
   );
 }
 import { normalizeVideoBaseUrl, normalizeVideoParams } from "./engine/index.js";
+import { listImageInstances, listVideoInstances } from "./engine/registry.js";
 
 export function dshHome(): string {
   const raw = process.env.DSH_HOME?.trim();
@@ -90,6 +91,79 @@ export async function migrateLegacyDataRoot(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * ── 渠道层 ──────────────────────────────────────────────────────────────
+ *
+ * 三层各自只管一件事：
+ *
+ *   - **供应商**（账号）= 一把 API Key，只回答「用谁的 key」；
+ *   - **渠道** = 一个 API 地址 + 一个协议 + 一组模型，只回答「打到哪、怎么说」；
+ *   - **模型条目** = 一个上游 model（加一个可选显示名）。
+ *
+ * 基数：供应商 **N:1** 渠道（`supplier.channelId` 是单值）、渠道 **1:N** 模型、
+ * 渠道 **1:N** 供应商（同一个端点可以配多把 key）。
+ *
+ * 密钥单独一层（`channelSecrets`，**键是供应商**）：任何一次整对象写回都会覆盖
+ * 没重填的字段；密钥外置之后，供应商与渠道对象里根本没有 secret。
+ *
+ * 协议（`protocol`）配在**渠道**上——它描述的是「这个端点怎么说话」，
+ * 而一个端点只有一种说法。所以模型条目里**没有**协议字段。
+ */
+
+/** 协议 id：取值由 `engine/registry.ts` 的实例 id 决定（`ark` / `minimax` / …）。 */
+export type ProtocolId = string;
+
+/** 一个上游模型条目。`id` 是身份（任务快照记它），`label` 只是显示名。 */
+export interface ModelEntry {
+  id: string;
+  label?: string;
+}
+
+export interface ChannelConfig {
+  /** 协议：用哪套形状跟这个端点说话。 */
+  protocol: ProtocolId;
+  name: string;
+  /** 主机根地址（已去掉尾部斜杠）。 */
+  baseUrl: string;
+  models: ModelEntry[];
+  /** 协议私有参数（方舟的 `size` / `watermark`，MiniMax 的 `duration` / `resolution`…）。 */
+  options?: Record<string, unknown>;
+}
+
+/** 供应商 = 一个账号 / 一把 Key。 */
+export interface SupplierConfig {
+  name: string;
+  channelId: string;
+}
+
+/** 一个用途的绑定：用哪个供应商，以及（可选）默认用它的哪个模型。 */
+export interface BindSlot {
+  supplierId: string;
+  /** 缺省 = 该渠道的第一个模型。 */
+  model?: string;
+}
+
+export type ImagePurpose = "default" | "sheet" | "redraw";
+
+export interface BindConfig {
+  image: Record<ImagePurpose, BindSlot>;
+  video: { default: BindSlot };
+}
+
+/**
+ * 渠道层结构版本，语义同 `ROW_ORDER_VERSION`：
+ * 迁移只在「版本号缺失」时发生一次，之后用户把渠道全删光也不会被重新种回来。
+ */
+export const CHANNEL_VERSION = 1;
+
+/** 空的用途绑定（`supplierId` 为空串 = 没绑，解析回落到扁平字段）。 */
+export function emptyBindConfig(): BindConfig {
+  return {
+    image: { default: { supplierId: "" }, sheet: { supplierId: "" }, redraw: { supplierId: "" } },
+    video: { default: { supplierId: "" } }
+  };
 }
 
 export interface Config {
@@ -177,6 +251,20 @@ export interface Config {
 
   /** 并发请求数（生图 / 视频 / 抽帧各自受限）。 */
   concurrency: number;
+
+  /**
+   * ── 渠道层 ──
+   *
+   * U1 期间这三项与上面的扁平字段**互为投影**（见 docs/渠道层与设置页改造方案.md §9.4）：
+   * 旧设置页只写扁平字段，所以写完必须重算默认渠道；新 RPC 只写渠道，所以写完必须回写扁平。
+   */
+  channels: Record<string, ChannelConfig>;
+  suppliers: Record<string, SupplierConfig>;
+  bind: BindConfig;
+  /** 密钥字典，**键是供应商 id**。永不回传浏览器（`maskConfig` 显式剔除）。 */
+  channelSecrets: Record<string, string>;
+  /** 渠道层结构版本；缺省即触发一次迁移。 */
+  channelVersion: number;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -216,7 +304,13 @@ export const DEFAULT_CONFIG: Config = {
 
   rowOrder: [...DEFAULT_ROW_ORDER],
   rowOrderVersion: ROW_ORDER_VERSION,
-  concurrency: 3
+  concurrency: 3,
+
+  channels: {},
+  suppliers: {},
+  bind: emptyBindConfig(),
+  channelSecrets: {},
+  channelVersion: CHANNEL_VERSION
 };
 
 function asInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -237,6 +331,169 @@ function asNumber(value: unknown, fallback: number, min: number, max: number): n
   const n = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+/** 扁平字段那一组（不含渠道层）。迁移与投影都在这两半之间搬。 */
+export type FlatConfig = Omit<Config, "channels" | "suppliers" | "bind" | "channelSecrets" | "channelVersion">;
+
+/** 读成普通对象（数组、null、标量一律当空对象）。 */
+function asDict(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** 渠道 / 供应商 id 的规范。 */
+function isChannelId(value: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{0,39}$/.test(value);
+}
+
+/** 协议 id 必须落在注册表里——协议错会让整条渠道发错形状，所以宁可丢掉整条渠道。 */
+export function isProtocolId(value: string): boolean {
+  return listImageInstances().some((item) => item.id === value) || listVideoInstances().some((item) => item.id === value);
+}
+
+function normalizeModelEntry(value: unknown): ModelEntry | undefined {
+  if (typeof value === "string") {
+    const id = value.trim();
+    return id === "" ? undefined : { id };
+  }
+  const raw = asDict(value);
+  const id = asString(raw.id, "").trim();
+  if (id === "") return undefined;
+  const label = asString(raw.label, "").trim();
+  return label === "" ? { id } : { id, label: label.slice(0, 60) };
+}
+
+function normalizeChannel(id: string, value: unknown): ChannelConfig | undefined {
+  const raw = asDict(value);
+  const protocol = asString(raw.protocol, "").trim();
+  if (!isProtocolId(protocol)) return undefined;
+  const baseUrl = asString(raw.baseUrl, "").trim().replace(/\/+$/, "");
+  if (baseUrl === "") return undefined;
+  const models: ModelEntry[] = [];
+  for (const item of asList(raw.models)) {
+    const entry = normalizeModelEntry(item);
+    if (entry !== undefined && !models.some((model) => model.id === entry.id)) models.push(entry);
+  }
+  if (models.length === 0) return undefined;
+  const options = asDict(raw.options);
+  return {
+    protocol,
+    name: (asString(raw.name, "").trim() || id).slice(0, 80),
+    baseUrl,
+    models,
+    ...(Object.keys(options).length > 0 ? { options } : {})
+  };
+}
+
+/** 绑定的供应商必须存在，否则视作没绑（解析会回落到扁平字段）。 */
+function normalizeSlot(value: unknown, suppliers: Record<string, SupplierConfig>): BindSlot {
+  const raw = asDict(value);
+  const supplierId = asString(raw.supplierId, "").trim();
+  if (supplierId === "" || suppliers[supplierId] === undefined) return { supplierId: "" };
+  const model = asString(raw.model, "").trim();
+  return model === "" ? { supplierId } : { supplierId, model };
+}
+
+/**
+ * 渠道层归一化。
+ *
+ * 和上面那组扁平字段一样是**逐字段重建**，所以新增字段必须显式列进这里——
+ * 漏一个就等于「用户下次保存任意设置时把它清空」。
+ */
+function normalizeChannelLayer(
+  raw: Record<string, unknown>
+): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+  const channels: Record<string, ChannelConfig> = {};
+  for (const [id, value] of Object.entries(asDict(raw.channels))) {
+    if (!isChannelId(id)) continue;
+    const channel = normalizeChannel(id, value);
+    if (channel !== undefined) channels[id] = channel;
+  }
+
+  const suppliers: Record<string, SupplierConfig> = {};
+  for (const [id, value] of Object.entries(asDict(raw.suppliers))) {
+    if (!isChannelId(id)) continue;
+    const record = asDict(value);
+    const channelId = asString(record.channelId, "").trim();
+    if (channels[channelId] === undefined) continue; // 悬空引用 → 丢弃该供应商
+    suppliers[id] = { name: (asString(record.name, "").trim() || id).slice(0, 80), channelId };
+  }
+
+  const bind = emptyBindConfig();
+  const rawBind = asDict(raw.bind);
+  const rawImage = asDict(rawBind.image);
+  bind.image.default = normalizeSlot(rawImage.default, suppliers);
+  bind.image.sheet = normalizeSlot(rawImage.sheet, suppliers);
+  bind.image.redraw = normalizeSlot(rawImage.redraw, suppliers);
+  bind.video.default = normalizeSlot(asDict(rawBind.video).default, suppliers);
+
+  const channelSecrets: Record<string, string> = {};
+  for (const [id, value] of Object.entries(asDict(raw.channelSecrets))) {
+    if (suppliers[id] === undefined) continue; // 密钥只对存在的供应商有意义
+    if (typeof value === "string" && value.trim() !== "") channelSecrets[id] = value;
+  }
+
+  return { channels, suppliers, bind, channelSecrets };
+}
+
+/**
+ * 一次性迁移：把旧的扁平字段折成「一个渠道 + 一个供应商」，并绑好三个用途。
+ *
+ * 两处刻意的取舍：
+ *
+ * - **只为「部件重绘」换模型，不另建供应商。** 旧配置只有一把 key；凭空造第二个账号会让
+ *   两份 secret 各自漂移（改了主账号那个、重绘还在用旧 key）。
+ * - id 固定（渠道 `ark-cn` / `mm-intl`，供应商 `ark-main` / `mm-main`），方便排错与文档引用。
+ */
+function migrateFlatToChannels(flat: FlatConfig): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+  const channels: Record<string, ChannelConfig> = {};
+  const suppliers: Record<string, SupplierConfig> = {};
+  const channelSecrets: Record<string, string> = {};
+  const bind = emptyBindConfig();
+
+  const redraw = flat.arkRedrawModel.trim();
+  const imageModels: ModelEntry[] = [{ id: flat.arkModel }];
+  if (redraw !== "" && redraw !== flat.arkModel) imageModels.push({ id: redraw });
+
+  channels["ark-cn"] = {
+    protocol: "ark",
+    name: "火山方舟",
+    baseUrl: flat.arkBaseUrl,
+    models: imageModels,
+    options: { size: flat.arkSize, watermark: flat.arkWatermark, timeoutMs: flat.arkTimeoutMs }
+  };
+  suppliers["ark-main"] = { name: "默认账号", channelId: "ark-cn" };
+  if (flat.arkApiKey.trim() !== "") channelSecrets["ark-main"] = flat.arkApiKey;
+  bind.image.default = { supplierId: "ark-main" };
+  bind.image.sheet = { supplierId: "ark-main" };
+  bind.image.redraw =
+    redraw === "" || redraw === flat.arkModel
+      ? { supplierId: "ark-main" }
+      : { supplierId: "ark-main", model: redraw };
+
+  channels["mm-intl"] = {
+    protocol: "minimax",
+    name: "MiniMax",
+    baseUrl: flat.minimaxBaseUrl,
+    models: [{ id: flat.minimaxModel }],
+    options: {
+      duration: flat.minimaxDuration,
+      resolution: flat.minimaxResolution,
+      promptOptimizer: flat.minimaxPromptOptimizer,
+      timeoutMs: flat.minimaxTimeoutMs
+    }
+  };
+  suppliers["mm-main"] = { name: "默认账号", channelId: "mm-intl" };
+  if (flat.minimaxApiKey.trim() !== "") channelSecrets["mm-main"] = flat.minimaxApiKey;
+  bind.video.default = { supplierId: "mm-main" };
+
+  return { channels, suppliers, bind, channelSecrets };
 }
 
 /** 把任意读入的 JSON 收敛成一份合法配置，缺项一律回落默认值。 */
@@ -261,7 +518,7 @@ export function normalizeConfig(input: unknown): Config {
     resolution: raw.minimaxResolution ?? DEFAULT_CONFIG.minimaxResolution
   });
 
-  return {
+  const flat: FlatConfig = {
     arkApiKey: asString(raw.arkApiKey, DEFAULT_CONFIG.arkApiKey),
     arkBaseUrl: asString(raw.arkBaseUrl, DEFAULT_CONFIG.arkBaseUrl).replace(/\/+$/, ""),
     arkModel: asString(raw.arkModel, DEFAULT_CONFIG.arkModel),
@@ -299,6 +556,16 @@ export function normalizeConfig(input: unknown): Config {
     rowOrderVersion: ROW_ORDER_VERSION,
     concurrency: asInt(raw.concurrency, DEFAULT_CONFIG.concurrency, 1, 8)
   };
+
+  // 渠道层：先把读入的结构归一化；只有「从没迁过 且 一条渠道都没有」时，
+  // 才把扁平字段折成渠道。channelVersion 一旦落盘，用户把渠道全删光也不会被重新种回来。
+  const layer = normalizeChannelLayer(raw);
+  const channelLayer =
+    raw.channelVersion === undefined && Object.keys(layer.channels).length === 0
+      ? migrateFlatToChannels(flat)
+      : layer;
+
+  return { ...flat, ...channelLayer, channelVersion: CHANNEL_VERSION };
 }
 
 let cache: Config | undefined;
@@ -314,9 +581,130 @@ export async function loadConfig(): Promise<Config> {
   return cache;
 }
 
+/**
+ * ── 双向投影（U1 专有，U4 删除）────────────────────────────────────────
+ *
+ * 旧设置页**只写扁平字段**，新 RPC**只写渠道层**，而解析一律读渠道层。
+ * 所以两边必须互为投影，否则「旧页面看着生效、其实没生效」。
+ *
+ * 方向由「这次写的是哪一边」决定，见 `saveConfig`。
+ */
+
+/** 按注册表约定，两组扁平字段各自对应的默认渠道 / 供应商 id。 */
+const IMAGE_DEFAULT_SUPPLIER = "ark-main";
+const IMAGE_DEFAULT_CHANNEL = "ark-cn";
+const VIDEO_DEFAULT_SUPPLIER = "mm-main";
+const VIDEO_DEFAULT_CHANNEL = "mm-intl";
+
+/** 扁平字段 → 默认渠道 / 供应商（旧设置页写完走这一步）。 */
+export function projectFlatToChannels(config: Config): Config {
+  const channels = { ...config.channels };
+  const suppliers = { ...config.suppliers };
+  const channelSecrets = { ...config.channelSecrets };
+  const bind: BindConfig = { image: { ...config.bind.image }, video: { ...config.bind.video } };
+
+  // ── 生图组 ──
+  const imageSupplierId = bind.image.default.supplierId || IMAGE_DEFAULT_SUPPLIER;
+  const imageChannelId = suppliers[imageSupplierId]?.channelId || IMAGE_DEFAULT_CHANNEL;
+  const imageModels: ModelEntry[] = [{ id: config.arkModel }];
+  const redraw = config.arkRedrawModel.trim();
+  if (redraw !== "" && redraw !== config.arkModel) imageModels.push({ id: redraw });
+  channels[imageChannelId] = {
+    protocol: channels[imageChannelId]?.protocol ?? "ark",
+    name: channels[imageChannelId]?.name ?? "火山方舟",
+    baseUrl: config.arkBaseUrl,
+    models: imageModels,
+    options: { size: config.arkSize, watermark: config.arkWatermark, timeoutMs: config.arkTimeoutMs }
+  };
+  suppliers[imageSupplierId] = { name: suppliers[imageSupplierId]?.name ?? "默认账号", channelId: imageChannelId };
+  if (config.arkApiKey.trim() !== "") channelSecrets[imageSupplierId] = config.arkApiKey;
+  else delete channelSecrets[imageSupplierId];
+  bind.image.default = { supplierId: imageSupplierId };
+  if (bind.image.sheet.supplierId === "") bind.image.sheet = { supplierId: imageSupplierId };
+  bind.image.redraw =
+    redraw === "" || redraw === config.arkModel
+      ? { supplierId: bind.image.redraw.supplierId || imageSupplierId }
+      : { supplierId: bind.image.redraw.supplierId || imageSupplierId, model: redraw };
+
+  // ── 视频组 ──
+  const videoSupplierId = bind.video.default.supplierId || VIDEO_DEFAULT_SUPPLIER;
+  const videoChannelId = suppliers[videoSupplierId]?.channelId || VIDEO_DEFAULT_CHANNEL;
+  channels[videoChannelId] = {
+    protocol: channels[videoChannelId]?.protocol ?? "minimax",
+    name: channels[videoChannelId]?.name ?? "MiniMax",
+    baseUrl: config.minimaxBaseUrl,
+    models: [{ id: config.minimaxModel }],
+    options: {
+      duration: config.minimaxDuration,
+      resolution: config.minimaxResolution,
+      promptOptimizer: config.minimaxPromptOptimizer,
+      timeoutMs: config.minimaxTimeoutMs
+    }
+  };
+  suppliers[videoSupplierId] = { name: suppliers[videoSupplierId]?.name ?? "默认账号", channelId: videoChannelId };
+  if (config.minimaxApiKey.trim() !== "") channelSecrets[videoSupplierId] = config.minimaxApiKey;
+  else delete channelSecrets[videoSupplierId];
+  bind.video.default = { supplierId: videoSupplierId };
+
+  return { ...config, channels, suppliers, bind, channelSecrets };
+}
+
+/** 渠道层 → 扁平字段（新 RPC 写完走这一步）。 */
+export function projectChannelsToFlat(config: Config): Config {
+  const imageSlot = config.bind.image.default;
+  const videoSlot = config.bind.video.default;
+  const imageSupplier = config.suppliers[imageSlot.supplierId];
+  const videoSupplier = config.suppliers[videoSlot.supplierId];
+  const imageChannel = imageSupplier === undefined ? undefined : config.channels[imageSupplier.channelId];
+  const videoChannel = videoSupplier === undefined ? undefined : config.channels[videoSupplier.channelId];
+  const imageOptions = imageChannel?.options ?? {};
+  const videoOptions = videoChannel?.options ?? {};
+  const num = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+  return {
+    ...config,
+    // 只有绑到东西时才回写，否则保留原状（渠道全空时不该把扁平字段清成默认值）。
+    ...(imageChannel === undefined
+      ? {}
+      : {
+          arkBaseUrl: imageChannel.baseUrl,
+          arkModel: imageSlot.model ?? imageChannel.models[0]?.id ?? config.arkModel,
+          arkRedrawModel:
+            config.bind.image.redraw.model ??
+            (config.bind.image.redraw.supplierId === imageSlot.supplierId ? config.arkRedrawModel : ""),
+          arkSize: typeof imageOptions.size === "string" ? imageOptions.size : config.arkSize,
+          arkWatermark: typeof imageOptions.watermark === "boolean" ? imageOptions.watermark : config.arkWatermark,
+          arkTimeoutMs: num(imageOptions.timeoutMs, config.arkTimeoutMs)
+        }),
+    ...(imageSupplier === undefined ? {} : { arkApiKey: config.channelSecrets[imageSlot.supplierId] ?? "" }),
+    ...(videoChannel === undefined
+      ? {}
+      : {
+          minimaxBaseUrl: videoChannel.baseUrl,
+          minimaxModel: videoSlot.model ?? videoChannel.models[0]?.id ?? config.minimaxModel,
+          minimaxDuration: num(videoOptions.duration, config.minimaxDuration),
+          minimaxResolution:
+            typeof videoOptions.resolution === "string" ? videoOptions.resolution : config.minimaxResolution,
+          minimaxPromptOptimizer:
+            typeof videoOptions.promptOptimizer === "boolean"
+              ? videoOptions.promptOptimizer
+              : config.minimaxPromptOptimizer,
+          minimaxTimeoutMs: num(videoOptions.timeoutMs, config.minimaxTimeoutMs)
+        }),
+    ...(videoSupplier === undefined ? {} : { minimaxApiKey: config.channelSecrets[videoSlot.supplierId] ?? "" })
+  };
+}
+
+/** 渠道层的四个键；`saveConfig` 用它判断「这次写的是哪一边」。 */
+const CHANNEL_LAYER_KEYS = ["channels", "suppliers", "bind", "channelSecrets"] as const;
+
 export async function saveConfig(patch: Partial<Config>): Promise<Config> {
   const current = await loadConfig();
-  const next = normalizeConfig({ ...current, ...patch });
+  const merged = { ...current, ...patch };
+  // 写的是哪一边，就把另一边同步过来。见文件头的双向投影说明。
+  const wroteChannels = CHANNEL_LAYER_KEYS.some((key) => patch[key] !== undefined);
+  const next = normalizeConfig(wroteChannels ? projectChannelsToFlat(merged) : projectFlatToChannels(merged));
   await mkdir(dataRoot(), { recursive: true });
   const target = configPath();
   const tmp = `${target}.tmp`;
@@ -326,8 +714,15 @@ export async function saveConfig(patch: Partial<Config>): Promise<Config> {
   return next;
 }
 
-/** 回传给浏览器的脱敏视图：只说明 key 是否已配置，以及尾部 4 位。 */
-export interface ConfigView extends Omit<Config, "arkApiKey" | "minimaxApiKey"> {
+/**
+ * 回传给浏览器的脱敏视图。
+ *
+ * 渠道层这四项**整组排除**，由 `decorateConfig` 重新装配成界面要的形状：
+ * `channelSecrets` 是密钥本体（`...rest` 会把它整个 spread 出去）；`channels` / `suppliers` /
+ * `bind` 要带上 `keySet` / `keyHint` / 标签，不能直接透传内部结构。
+ */
+export interface ConfigView
+  extends Omit<Config, "arkApiKey" | "minimaxApiKey" | "channelSecrets" | "channels" | "suppliers" | "bind"> {
   arkApiKeySet: boolean;
   arkApiKeyHint: string;
   minimaxApiKeySet: boolean;
@@ -335,7 +730,15 @@ export interface ConfigView extends Omit<Config, "arkApiKey" | "minimaxApiKey"> 
 }
 
 export function maskConfig(config: Config): ConfigView {
-  const { arkApiKey, minimaxApiKey, ...rest } = config;
+  const {
+    arkApiKey,
+    minimaxApiKey,
+    channelSecrets: _channelSecrets,
+    channels: _channels,
+    suppliers: _suppliers,
+    bind: _bind,
+    ...rest
+  } = config;
   return {
     ...rest,
     rowOrder: [...config.rowOrder],
@@ -346,7 +749,8 @@ export function maskConfig(config: Config): ConfigView {
   };
 }
 
-function hintOf(key: string): string {
+/** 密钥提示：空 = 没配；很短 = 只说「已配置」；否则给尾 4 位。渠道视图也用它。 */
+export function hintOf(key: string): string {
   const trimmed = key.trim();
   if (trimmed === "") return "";
   if (trimmed.length <= 8) return "已配置";

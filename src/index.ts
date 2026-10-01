@@ -14,13 +14,17 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { DEFAULT_CONFIG, ROW_ORDER_VERSION, loadConfig, maskConfig, migrateLegacyDataRoot, projectsRoot, saveConfig } from "./config.js";
+import { DEFAULT_CONFIG, ROW_ORDER_VERSION, hintOf, isProtocolId, loadConfig, maskConfig, migrateLegacyDataRoot, projectsRoot, saveConfig, type Config } from "./config.js";
 import { DEFAULT_ROW_ORDER, DEFAULT_TURN_PROMPT, DEFAULT_VIDEO_PROMPT, DIRECTION_KEYS, TURN_DIRECTION_DEFAULT, TURN_FRAME_COUNT_MAX, TURN_FRAME_COUNT_MIN, defaultImagePrompts, directionOf } from "./directions.js";
 import { checkFfmpeg } from "./media.js";
 import {
   imageEngine,
   imageModelCatalog,
+  listProtocols,
+  modelLabelOf,
   normalizeVideoParams,
+  resolveImageTarget,
+  resolveVideoTarget,
   videoCapabilityOf,
   videoEndpointOf,
   videoEngine,
@@ -206,11 +210,54 @@ export class GameStudioGateway extends TypertRemoteService {
     const config = await loadConfig();
     return this.decorateConfig(config);
   }
+  /**
+   * 渠道层的界面视图。
+   *
+   * `channels` / `suppliers` / `bind` 在 `maskConfig` 里被**整组剔除**（否则 `channelSecrets`
+   * 会跟着 `...rest` 漏给浏览器），这里重新装配成界面要的形状：协议标签、密钥状态、用途绑定。
+   */
+  channelViewOf(config: Config) {
+    const protocols = listProtocols();
+    return {
+      channels: Object.entries(config.channels).map(([id, channel]) => ({
+        id,
+        protocol: channel.protocol,
+        protocolLabel: protocols.find((entry) => entry.id === channel.protocol)?.label ?? channel.protocol,
+        name: channel.name,
+        baseUrl: channel.baseUrl,
+        options: channel.options ?? {},
+        models: channel.models.map((model) => ({
+          id: model.id,
+          label: model.label ?? modelLabelOf(channel.protocol, model.id) ?? model.id
+        }))
+      })),
+      suppliers: Object.entries(config.suppliers).map(([id, supplier]) => {
+        const key = config.channelSecrets[id] ?? "";
+        return {
+          id,
+          name: supplier.name,
+          channelId: supplier.channelId,
+          keySet: key.trim() !== "",
+          keyHint: hintOf(key)
+        };
+      }),
+      bind: {
+        image: {
+          default: { ...config.bind.image.default },
+          sheet: { ...config.bind.image.sheet },
+          redraw: { ...config.bind.image.redraw }
+        },
+        video: { default: { ...config.bind.video.default } }
+      },
+      protocols: protocols.map((entry) => ({ ...entry }))
+    };
+  }
   async decorateConfig(config) {
     if (this.ffmpegCache === undefined)
       this.ffmpegCache = await checkFfmpeg();
     return {
       ...maskConfig(config),
+      ...this.channelViewOf(config),
       rowOrder: [...config.rowOrder],
       defaults: { ...DEFAULT_CONFIG },
       arkModels: imageModelCatalog(),
@@ -293,13 +340,147 @@ export class GameStudioGateway extends TypertRemoteService {
   }
   async testArk() {
     const config = await loadConfig();
-    if (config.arkApiKey.trim() === "")
+    const target = resolveImageTarget(config, "default");
+    if (target.context.apiKey.trim() === "")
       throw new Error("尚未配置火山方舟 API Key");
-    return imageEngine(config).test();
+    return imageEngine(target).test();
   }
   async testMinimax() {
     const config = await loadConfig();
-    return videoEngine(config).test();
+    return videoEngine(resolveVideoTarget(config)).test();
+  }
+  // ── 渠道层：逐渠道 / 供应商的增删改 ──────────────────────────────────────
+  //
+  // 为什么不复用 `saveConfig`：它是**白名单 patch**，`channels` 一旦进白名单就是整体替换，
+  // 写一个渠道会把别的渠道抹掉。嵌套结构必须有自己的入口。
+  //
+  // 每个写方法都返回**整份配置视图**（和 `saveConfig` 一致），界面拿到就不必再拉一次。
+
+  /** 测一个供应商的连通性：用它指向的渠道与模型真发一次请求。 */
+  async testSupplier(payload) {
+    const id = asString(asRecord(payload).id, "").trim();
+    const config = await loadConfig();
+    const supplier = config.suppliers[id];
+    if (supplier === undefined) throw new Error(`供应商不存在：${id}`);
+    if ((config.channelSecrets[id] ?? "").trim() === "") throw new Error("该供应商尚未配置密钥");
+    const channel = config.channels[supplier.channelId];
+    if (channel === undefined) throw new Error(`渠道不存在：${supplier.channelId}`);
+    const isImage = listProtocols().some((entry) => entry.id === channel.protocol && entry.capability === "image");
+    const target = isImage
+      ? resolveImageTarget(config, "default", { supplierId: id })
+      : resolveVideoTarget(config, { supplierId: id });
+    return isImage ? imageEngine(target).test() : videoEngine(target).test();
+  }
+
+  /** 新建 / 更新一条渠道。**不碰任何密钥**——密钥是供应商的属性。 */
+  async saveChannel(payload) {
+    const input = asRecord(payload);
+    const config = await loadConfig();
+    const protocol = asString(input.protocol, "").trim();
+    if (!isProtocolId(protocol)) throw new Error(`未知协议：${protocol}`);
+    const baseUrl = asString(input.baseUrl, "").trim().replace(/\/+$/, "");
+    if (baseUrl === "") throw new Error("Base URL 不能为空");
+    const models = modelEntriesOf(input.models);
+    if (models.length === 0) throw new Error("至少配置一个模型");
+    const name = asString(input.name, "").trim().slice(0, 80);
+    const id =
+      asString(input.id, "").trim() ||
+      uniqueId(slugId(name === "" ? protocol : name, protocol), Object.keys(config.channels));
+    if (!isChannelId(id)) throw new Error(`渠道 id 不合法：${id}`);
+    const options = asRecord(input.options);
+    const channel = {
+      protocol,
+      name: name === "" ? id : name,
+      baseUrl,
+      models,
+      ...(Object.keys(options).length > 0 ? { options } : {})
+    };
+    return this.decorateConfig(await saveConfig({ channels: { ...config.channels, [id]: channel } }));
+  }
+
+  /** 删除一条渠道；**仍被供应商指向就拒绝**，并说清是谁。 */
+  async deleteChannel(payload) {
+    const id = asString(asRecord(payload).id, "").trim();
+    const config = await loadConfig();
+    if (config.channels[id] === undefined) throw new Error(`渠道不存在：${id}`);
+    const holders = Object.entries(config.suppliers)
+      .filter(([, supplier]) => supplier.channelId === id)
+      .map(([supplierId]) => supplierId);
+    if (holders.length > 0)
+      throw new Error(`渠道「${id}」仍被供应商指向（${holders.join("、")}），请先改掉或删除它们`);
+    const channels = { ...config.channels };
+    delete channels[id];
+    return this.decorateConfig(await saveConfig({ channels }));
+  }
+
+  /** 新建 / 改名 / 换渠道。换渠道时密钥不动——这正是 key 与 url 解耦的用处。 */
+  async saveSupplier(payload) {
+    const input = asRecord(payload);
+    const config = await loadConfig();
+    const channelId = asString(input.channelId, "").trim();
+    if (config.channels[channelId] === undefined) throw new Error(`渠道不存在：${channelId}`);
+    const name = asString(input.name, "").trim().slice(0, 80);
+    const id = asString(input.id, "").trim() || uniqueId(slugId(name === "" ? "account" : name, "account"), Object.keys(config.suppliers));
+    if (!isChannelId(id)) throw new Error(`供应商 id 不合法：${id}`);
+    const suppliers = {
+      ...config.suppliers,
+      [id]: { name: name === "" ? id : name, channelId }
+    };
+    return this.decorateConfig(await saveConfig({ suppliers }));
+  }
+
+  /** 删除一个供应商；**仍被用途绑定引用就拒绝**，并列出是哪几个用途。 */
+  async deleteSupplier(payload) {
+    const id = asString(asRecord(payload).id, "").trim();
+    const config = await loadConfig();
+    if (config.suppliers[id] === undefined) throw new Error(`供应商不存在：${id}`);
+    const bound: string[] = [];
+    if (config.bind.image.default.supplierId === id) bound.push("生图默认");
+    if (config.bind.image.sheet.supplierId === id) bound.push("拆件");
+    if (config.bind.image.redraw.supplierId === id) bound.push("部件重绘");
+    if (config.bind.video.default.supplierId === id) bound.push("视频默认");
+    if (bound.length > 0)
+      throw new Error(`供应商「${id}」仍被用途绑定引用（${bound.join("、")}），请先改绑或删除该渠道`);
+    const suppliers = { ...config.suppliers };
+    delete suppliers[id];
+    const channelSecrets = { ...config.channelSecrets };
+    delete channelSecrets[id];
+    return this.decorateConfig(await saveConfig({ suppliers, channelSecrets }));
+  }
+
+  /** 只写一个供应商的密钥。约定与旧的两个 key 一致：不带＝保持原值，空串＝清除。 */
+  async saveSupplierKey(payload) {
+    const input = asRecord(payload);
+    const id = asString(input.id, "").trim();
+    const config = await loadConfig();
+    if (config.suppliers[id] === undefined) throw new Error(`供应商不存在：${id}`);
+    const channelSecrets = { ...config.channelSecrets };
+    const apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
+    if (apiKey !== "") channelSecrets[id] = apiKey;
+    else delete channelSecrets[id];
+    return this.decorateConfig(await saveConfig({ channelSecrets }));
+  }
+
+  /** 改一条用途绑定。`model` 省略＝用该渠道的第一个模型。 */
+  async bindSupplier(payload) {
+    const input = asRecord(payload);
+    const capability = asString(input.capability, "").trim();
+    const purpose = asString(input.purpose, "").trim();
+    const supplierId = asString(input.supplierId, "").trim();
+    const config = await loadConfig();
+    if (supplierId !== "" && config.suppliers[supplierId] === undefined)
+      throw new Error(`供应商不存在：${supplierId}`);
+    const model = asString(input.model, "").trim();
+    const slot = model === "" ? { supplierId } : { supplierId, model };
+    const bind = { image: { ...config.bind.image }, video: { ...config.bind.video } };
+    if (capability === "image" && (purpose === "default" || purpose === "sheet" || purpose === "redraw")) {
+      bind.image[purpose] = slot;
+    } else if (capability === "video" && purpose === "default") {
+      bind.video.default = slot;
+    } else {
+      throw new Error(`没有这个用途绑定：${capability}/${purpose}`);
+    }
+    return this.decorateConfig(await saveConfig({ bind }));
   }
   /**
    * 浏览器半区上报自己的 `location.origin`。
@@ -1796,4 +1977,49 @@ export function apply(ctx) {
     seqgen.disposeSequence();
     riggen.disposeRig();
   }, "dsh-game-material-master: pipeline cleanup");
+}
+
+/** 渠道 / 供应商 id 的规范，与 `config.ts` 的归一化保持一致。 */
+function isChannelId(value: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{0,39}$/.test(value);
+}
+
+/** 由名字派生一个合法 id（中文名会退化成 fallback）。 */
+function slugId(name: string, fallback: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug !== "" && isChannelId(slug) ? slug : fallback;
+}
+
+/** 在已占用的 id 里找一个不冲突的（`name` → `name-2` → `name-3` …）。 */
+function uniqueId(base: string, taken: readonly string[]): string {
+  if (!taken.includes(base)) return base;
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${base}-${n}`.slice(0, 40);
+    if (!taken.includes(candidate)) return candidate;
+  }
+  return `${base}-${Date.now().toString(36)}`.slice(0, 40);
+}
+
+/**
+ * 把界面传来的模型列表收敛成 `{ id, label? }`。
+ *
+ * 接受两种写法：纯字符串（`["gpt-image-1"]`，最省事的调用方式）与对象
+ * （`[{ id, label }]`，界面用的那种）。去重按 `id`。
+ */
+function modelEntriesOf(value: unknown): { id: string; label?: string }[] {
+  if (!Array.isArray(value)) return [];
+  const out: { id: string; label?: string }[] = [];
+  for (const item of value) {
+    const record = typeof item === "object" && item !== null ? (item as Record<string, unknown>) : undefined;
+    const id = typeof item === "string" ? item.trim() : String(record?.id ?? "").trim();
+    if (id === "" || out.some((entry) => entry.id === id)) continue;
+    const label = String(record?.label ?? "").trim();
+    out.push(label === "" ? { id } : { id, label: label.slice(0, 60) });
+  }
+  return out;
 }

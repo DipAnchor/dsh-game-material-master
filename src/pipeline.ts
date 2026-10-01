@@ -21,6 +21,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { loadConfig, type Config } from "./config.js";
+import { resolveImageTarget, resolveVideoTarget, videoOptionsOf } from "./engine/index.js";
 import {
   DEFAULT_TURN_PROMPT,
   DIRECTIONS,
@@ -194,7 +195,7 @@ async function generateOne(projectId: string, key: string, promptOverride?: stri
   const startedAt = Date.now();
   try {
     const images = await Promise.all(refs.map((file) => toDataUri(file, mimeOf(file))));
-    const result = await imageEngine(config).generate({ prompt, images });
+    const result = await imageEngine(resolveImageTarget(config)).generate({ prompt, images });
 
     const relative = `images/${key}.${result.ext}`;
     await mkdir(dirname(assetPath(projectId, relative)), { recursive: true });
@@ -310,7 +311,8 @@ async function submitTurnVideo(projectId: string): Promise<void> {
   const project = await readProject(projectId);
   if (project === undefined) throw new Error(`项目不存在：${projectId}`);
   const config = await loadConfig();
-  if (config.minimaxApiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
+  const target = resolveVideoTarget(config);
+  if (target.context.apiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
 
   const first = turnFirstFrame(project);
   if (first === undefined) throw new Error("还没有源图，无法生成转圈视频");
@@ -338,12 +340,10 @@ async function submitTurnVideo(projectId: string): Promise<void> {
   try {
     const jpegRel = "videos/turn-first-frame.jpg";
     const dataUri = await toJpegDataUri(assetPath(projectId, first.file), assetPath(projectId, jpegRel));
-    const taskId = await videoEngine(config).submit({
+    const taskId = await videoEngine(target).submit({
       prompt,
       firstFrameImage: dataUri,
-      duration: config.minimaxDuration,
-      resolution: config.minimaxResolution,
-      promptOptimizer: config.minimaxPromptOptimizer
+      ...videoOptionsOf(target, config)
     });
     await patchProject(projectId, (current) => {
       current.turn.video = {
@@ -374,7 +374,7 @@ async function pollTurnVideoOnce(projectId: string, config: Config): Promise<voi
   const taskId = project.turn?.video?.taskId;
   if (project.turn?.video?.status !== "running" || taskId === undefined) return;
 
-  const video = videoEngine(config);
+  const video = videoEngine(resolveVideoTarget(config));
   try {
     const query = await video.query(taskId);
     if (query.status === "failed") {
@@ -683,7 +683,8 @@ export function startVideos(projectId: string, keys?: string[]): { started: bool
     const project = await readProject(projectId);
     if (project === undefined) throw new Error(`项目不存在：${projectId}`);
     const config = await loadConfig();
-    if (config.minimaxApiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
+    const target = resolveVideoTarget(config);
+    if (target.context.apiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
 
     const targets = (keys ?? DIRECTION_KEYS).filter((key) => {
       const image = project.images[key];
@@ -722,12 +723,10 @@ export function startVideos(projectId: string, keys?: string[]): { started: bool
         const jpegRel = `videos/${key}-first-frame.jpg`;
         const dataUri = await toJpegDataUri(assetPath(projectId, image.file), assetPath(projectId, jpegRel));
         const prompt = (fresh.prompts.videoPerDirection?.[key] ?? fresh.prompts.video).trim();
-        const taskId = await videoEngine(config).submit({
+        const taskId = await videoEngine(target).submit({
           prompt,
           firstFrameImage: dataUri,
-          duration: config.minimaxDuration,
-          resolution: config.minimaxResolution,
-          promptOptimizer: config.minimaxPromptOptimizer
+          ...videoOptionsOf(target, config)
         });
         await patchProject(projectId, (current) => {
           current.videos[key] = {
@@ -794,7 +793,7 @@ export async function pollVideosOnce(projectId: string): Promise<void> {
     return;
   }
 
-  const video = videoEngine(config);
+  const video = videoEngine(resolveVideoTarget(config));
   await Promise.all(
     pending.map(async (key) => {
       const label = directionOf(key)?.label ?? key;

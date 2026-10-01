@@ -17,7 +17,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { imageJobsRoot, loadConfig } from "./config.js";
-import { imageEngine } from "./engine/index.js";
+import { imageEngine, resolveImageTarget } from "./engine/index.js";
 import { decodeToRgba, mimeOf, toDataUri } from "./media.js";
 import { keyGreen } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -274,10 +274,12 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
   const config = await loadConfig();
   const prompt = buildPrompt(job);
   if (prompt === "") throw new Error("提示词为空，请先填写");
-  if (config.arkApiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
 
-  // 生图模型同样是全局设置（设置 → 游戏素材大师 → 生图模型），任务只跟随、不覆盖。
-  job.settings.model = config.arkModel;
+  // 渠道层解析：模型 → 渠道 → 供应商。U1 期间渠道与扁平字段互为投影，
+  // 所以解析出来的模型与 key 和改造前逐字一致（任务级模型到 U3 才开放）。
+  const target = resolveImageTarget(config, "default");
+  if (target.context.apiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
+  job.settings.model = target.context.model;
 
   const item: ImageItem = job.items[index] ?? { index, status: "empty", source: "generated" };
   job.items[index] = { ...item, status: "running", error: undefined };
@@ -286,7 +288,7 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
 
   try {
     const refs = await Promise.all(job.refs.map((ref) => toDataUri(imageAssetPath(jobId, ref.file), mimeOf(ref.file))));
-    const result = await imageEngine(config).generate({
+    const result = await imageEngine(target).generate({
       prompt,
       images: refs,
       size: job.settings.size || undefined,

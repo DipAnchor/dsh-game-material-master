@@ -18,6 +18,30 @@ const projectListSchema = z.object({ projects: z.array(jsonObject) });
 
 const saveConfigSchema = z.record(z.string(), z.unknown());
 
+/** 渠道层：逐渠道 / 供应商的增删改。`id` 省略即新建。 */
+const channelIdSchema = z.object({ id: z.string() });
+const modelEntrySchema = z.union([z.string(), z.object({ id: z.string(), label: z.string().optional() })]);
+const saveChannelSchema = z.object({
+  id: z.string().optional(),
+  protocol: z.string(),
+  name: z.string().optional(),
+  baseUrl: z.string(),
+  models: z.array(modelEntrySchema),
+  options: z.record(z.string(), z.unknown()).optional()
+});
+const saveSupplierSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  channelId: z.string()
+});
+const saveSupplierKeySchema = z.object({ id: z.string(), apiKey: z.string().optional() });
+const bindSupplierSchema = z.object({
+  capability: z.enum(["image", "video"]),
+  purpose: z.enum(["default", "sheet", "redraw"]),
+  supplierId: z.string(),
+  model: z.string().optional()
+});
+
 const createProjectSchema = z.object({ name: z.string().optional() });
 const projectIdSchema = z.object({ projectId: z.string() });
 const renameSchema = z.object({ projectId: z.string(), name: z.string() });
@@ -496,6 +520,14 @@ export const METHODS: MethodSpec[] = [
   { method: "saveConfig", payload: saveConfigSchema, result: configViewSchema },
   { method: "testArk", result: jsonObject },
   { method: "testMinimax", result: jsonObject },
+  // 渠道层。密钥不进 `saveConfig` 的白名单，只能从 `saveSupplierKey` 走。
+  { method: "testSupplier", payload: channelIdSchema, result: jsonObject },
+  { method: "saveChannel", payload: saveChannelSchema, result: configViewSchema },
+  { method: "deleteChannel", payload: channelIdSchema, result: configViewSchema },
+  { method: "saveSupplier", payload: saveSupplierSchema, result: configViewSchema },
+  { method: "deleteSupplier", payload: channelIdSchema, result: configViewSchema },
+  { method: "saveSupplierKey", payload: saveSupplierKeySchema, result: configViewSchema },
+  { method: "bindSupplier", payload: bindSupplierSchema, result: configViewSchema },
   // 浏览器半区在挂载时上报 origin，供宿主拼深链接；不是用户可调用的功能。
   { method: "reportClientOrigin", payload: reportOriginSchema, result: okSchema, clientOnly: true },
 

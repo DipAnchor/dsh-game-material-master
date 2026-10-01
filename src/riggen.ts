@@ -26,6 +26,7 @@
  */
 
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { resolveImageTarget } from "./engine/index.js";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, rigJobsRoot } from "./config.js";
@@ -1904,16 +1905,17 @@ export async function redrawRigPart(
   if (active === undefined) throw new Error(`「${name}」还没有贴图`);
 
   const config = await loadConfig();
-  if (config.arkApiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key，无法重绘（可以在界面里手工换色或上传替换，都不花钱）");
+  // 「部件重绘」走 redraw 用途的绑定：模型可由 `bind.image.redraw.model` 单指。
+  const target = resolveImageTarget(config, "redraw");
+  if (target.context.apiKey.trim() === "")
+    throw new Error("尚未配置火山方舟 API Key，无法重绘（可以在界面里手工换色或上传替换，都不花钱）");
 
   const decoded = await decodeToRgba(rigAssetPath(jobId, active.file), 2048);
   const original: Rgba = { data: decoded.rgba, width: decoded.width, height: decoded.height };
   const square = padToSquare(original, REDRAW_PAD_COLOR);
   const dataUri = `data:image/png;base64,${encodePng(square.image.data, square.image.width, square.image.height).toString("base64")}`;
 
-  const redrawModel = config.arkRedrawModel.trim() === "" ? config.arkModel : config.arkRedrawModel.trim();
-  const result = await imageEngine(config).generate({
-    model: redrawModel,
+  const result = await imageEngine(target).generate({
     prompt: buildRedrawPrompt(prompt, { role: part.role }),
     images: [dataUri]
   });
@@ -1943,7 +1945,7 @@ export async function redrawRigPart(
   if (stats.stdDev < MIN_REDRAW_CONTRAST) {
     throw new Error(
       `重绘结果几乎是纯色（亮度 ${stats.meanLuma.toFixed(0)}、标准差 ${stats.stdDev.toFixed(1)}），` +
-        `模型「${redrawModel}」没有画出内容，已丢弃（没有新增版本）。` +
+        `模型「${target.context.model}」没有画出内容，已丢弃（没有新增版本）。` +
         "可以换个更具体的提示词，或在「设置 → 游戏素材大师 → 部件重绘模型」里换一个模型；" +
         "只是想让颜色变一下的话，「换色」是免费的。"
     );
@@ -2919,18 +2921,20 @@ export async function generateSheet(jobId: string): Promise<void> {
   const job = await readRigJob(jobId);
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
   const config = await loadConfig();
-  if (config.arkApiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
+  // 「拆件摊平图」走 sheet 用途的绑定。
+  const target = resolveImageTarget(config, "sheet");
+  if (target.context.apiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
   if (job.source === undefined) throw new Error("还没有角色参考图，请先上传一张整图");
 
   const prompt = buildSheetRequest(job);
-  job.settings.model = config.arkModel;
+  job.settings.model = target.context.model;
   job.sheet = { ...job.sheet, status: "running", error: undefined };
-  appendJobLog(job.log, "info", `开始拆件生图（模型 ${config.arkModel}）`);
+  appendJobLog(job.log, "info", `开始拆件生图（模型 ${target.context.model}）`);
   await writeRigJob(job);
 
   try {
     const reference = await toDataUri(rigAssetPath(jobId, job.source.file), mimeOf(job.source.file));
-    const result = await imageEngine(config).generate({
+    const result = await imageEngine(target).generate({
       prompt,
       images: [reference],
       size: job.settings.size || undefined,

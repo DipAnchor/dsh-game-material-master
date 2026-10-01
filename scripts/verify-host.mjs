@@ -64,7 +64,10 @@ async function main() {
   check("注册了一条 prefix 路由", captured.routes.length === 1 && captured.routes[0].kind === "prefix", JSON.stringify(captured.routes.map((r) => r.path)));
 
   const invocations = captured.manifest?.invocations ?? [];
-  check("manifest 方法数为 97", invocations.length === 97, `实际 ${invocations.length}`);
+  // 97 → 104：渠道层加了 7 个方法（testSupplier / saveChannel / deleteChannel /
+  // saveSupplier / deleteSupplier / saveSupplierKey / bindSupplier）。
+  // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2 与 §9。
+  check("manifest 方法数为 104", invocations.length === 104, `实际 ${invocations.length}`);
   const ids = new Set(invocations.map((i) => i.id));
   check("方法 id 唯一", ids.size === invocations.length);
   check("所有方法都声明在 gameStudio 服务下", invocations.every((i) => i.service === "gameStudio" && i.namespace === "gameStudio"));
@@ -248,6 +251,129 @@ async function main() {
   check("不带 Key 的保存不会清空 Key", kept.arkApiKeySet === true);
   const cleared = await studio.saveConfig({ clearArkApiKey: true });
   check("clearArkApiKey 能清空 Key", cleared.arkApiKeySet === false);
+
+  // ── 2b. 渠道层：三层结构 + 双向投影 ───────────────────────────────────
+  // 这一节是 U1 的验收依据（docs/渠道层与设置页改造方案.md §9.4 的四条不变量）。
+  console.log("2b) 渠道层与双向投影");
+
+  const migrated = await studio.getConfig();
+  const arkOriginal = migrated.channels.find((c) => c.protocol === "ark");
+  const arkOriginalModels = arkOriginal.models.map((m) => m.id);
+  check(
+    "迁移出 ark / minimax 两条渠道",
+    arkOriginal !== undefined && migrated.channels.some((c) => c.protocol === "minimax"),
+    JSON.stringify(migrated.channels.map((c) => `${c.id}:${c.protocol}`))
+  );
+  check("迁移出对应的供应商", migrated.suppliers.length === 2, JSON.stringify(migrated.suppliers.map((s) => s.id)));
+  check(
+    "三个用途绑定都指到了供应商",
+    migrated.bind.image.default.supplierId !== "" &&
+      migrated.bind.image.sheet.supplierId !== "" &&
+      migrated.bind.image.redraw.supplierId !== "" &&
+      migrated.bind.video.default.supplierId !== ""
+  );
+  check("视图里没有 channelSecrets（...rest 没把密钥漏出去）", migrated.channelSecrets === undefined);
+  check(
+    "供应商带密钥状态与提示",
+    migrated.suppliers.every((s) => typeof s.keySet === "boolean" && typeof s.keyHint === "string")
+  );
+  check(
+    "渠道的模型带上显示名（来自协议目录）",
+    migrated.channels.every((c) => c.models.every((m) => typeof m.label === "string" && m.label !== ""))
+  );
+
+  // ① 旧设置页路径：写扁平字段 → 默认渠道要跟着变
+  await studio.saveConfig({ arkModel: "doubao-seedream-4-5-251128" });
+  const flatWrite = await studio.getConfig();
+  check(
+    "① 写扁平模型后默认渠道的 models 跟着变",
+    flatWrite.channels.find((c) => c.protocol === "ark")?.models.some((m) => m.id === flatWrite.arkModel) === true,
+    JSON.stringify(flatWrite.channels.find((c) => c.protocol === "ark")?.models)
+  );
+
+  // ② 新 RPC 路径：写渠道 → 扁平字段要跟着变
+  await studio.saveChannel({
+    id: arkOriginal.id,
+    protocol: "ark",
+    name: arkOriginal.name,
+    baseUrl: "https://verify.example/v1",
+    models: ["verify-model"]
+  });
+  const channelWrite = await studio.getConfig();
+  check("② 写渠道后扁平 baseUrl 跟着变", channelWrite.arkBaseUrl === "https://verify.example/v1", channelWrite.arkBaseUrl);
+  check("② 写渠道后扁平 model 跟着变", channelWrite.arkModel === "verify-model", channelWrite.arkModel);
+
+  // ③ 两条路径交替走：仍然一致，且渠道不膨胀
+  await studio.saveConfig({ arkModel: "doubao-seedream-4-0-250828" });
+  await studio.saveChannel({ id: arkOriginal.id, protocol: "ark", baseUrl: "https://verify.example/v1", models: ["verify-model"] });
+  const alternating = await studio.getConfig();
+  check("③ 交替写之后渠道数量没膨胀", alternating.channels.length === 2, String(alternating.channels.length));
+  check(
+    "③ 交替写之后两边一致",
+    alternating.channels.find((c) => c.protocol === "ark")?.models.some((m) => m.id === alternating.arkModel) === true,
+    alternating.arkModel
+  );
+
+  // ④ 加第二条渠道：扁平字段仍只反映「绑定的默认」那一条
+  await studio.saveChannel({
+    id: "second-ark",
+    protocol: "ark",
+    name: "第二条渠道",
+    baseUrl: "https://second.example/v1",
+    models: ["second-model"]
+  });
+  await studio.saveSupplier({ id: "second-account", name: "第二个账号", channelId: "second-ark" });
+  const withSecond = await studio.getConfig();
+  check("④ 加第二条渠道后扁平仍只反映默认那一条", withSecond.arkBaseUrl === "https://verify.example/v1", withSecond.arkBaseUrl);
+
+  // 密钥：只影响该供应商，且永不回传本体
+  await studio.saveSupplierKey({ id: "second-account", apiKey: "sk-second-abcdef" });
+  const keySet = await studio.getConfig();
+  check("saveSupplierKey 只影响该供应商", keySet.suppliers.find((s) => s.id === "second-account")?.keySet === true);
+  check("给非默认供应商写密钥不动扁平字段", keySet.arkApiKeyHint === "", keySet.arkApiKeyHint);
+  await studio.saveSupplierKey({ id: "second-account", apiKey: "" });
+  const keyCleared = await studio.getConfig();
+  check("saveSupplierKey 传空串即清除", keyCleared.suppliers.find((s) => s.id === "second-account")?.keySet === false);
+  check("整份视图里找不到密钥本体", JSON.stringify(keyCleared).includes("sk-second-abcdef") === false);
+
+  // 引用保护：删被指向的渠道 / 删被绑定的供应商都要被拒
+  let channelRefused = "";
+  try {
+    await studio.deleteChannel({ id: "second-ark" });
+  } catch (error) {
+    channelRefused = String(error?.message ?? error);
+  }
+  check("删除仍被供应商指向的渠道会被拒绝", /仍被供应商指向/.test(channelRefused), channelRefused);
+  let defaultRefused = "";
+  try {
+    await studio.deleteSupplier({ id: withSecond.bind.image.default.supplierId });
+  } catch (error) {
+    defaultRefused = String(error?.message ?? error);
+  }
+  check("删除仍被用途绑定的供应商会被拒绝", /仍被用途绑定引用/.test(defaultRefused), defaultRefused);
+  await studio.deleteSupplier({ id: "second-account" });
+  await studio.deleteChannel({ id: "second-ark" });
+  const cleaned = await studio.getConfig();
+  check("删干净后只剩迁移出来的两条渠道", cleaned.channels.length === 2, String(cleaned.channels.length));
+
+  // 用途绑定：能给单个用途配模型
+  await studio.bindSupplier({
+    capability: "image",
+    purpose: "redraw",
+    supplierId: cleaned.bind.image.default.supplierId,
+    model: "doubao-seedream-4-5-251128"
+  });
+  const bound = await studio.getConfig();
+  check(
+    "bindSupplier 能改用途绑定并带上模型",
+    bound.bind.image.redraw.model === "doubao-seedream-4-5-251128",
+    JSON.stringify(bound.bind.image.redraw)
+  );
+
+  // 复原：后面几节的流水线断言要用原来的地址与模型
+  await studio.saveChannel({ id: arkOriginal.id, protocol: "ark", name: arkOriginal.name, baseUrl: arkOriginal.baseUrl, models: arkOriginalModels });
+  const restored = await studio.getConfig();
+  check("渠道复原成功（不影响后续流水线断言）", restored.arkBaseUrl === arkOriginal.baseUrl, restored.arkBaseUrl);
 
   // ── 3. 项目 CRUD ──────────────────────────────────────────────────────
   console.log("3) 项目增删改查");
