@@ -12,6 +12,9 @@ yarn.lock
 # 本地自检产物（scripts/verify-*.mjs、e2e-*.mjs 的输出与截图）
 .verify/
 
+# 开发用的本机 HMR 覆盖层：由 scripts/dev-host.ps1 生成，含本机绝对路径
+scripts/dev-overlay.local.yml
+
 # 日志与系统文件
 *.log
 npm-debug.log*
