@@ -1,24 +1,39 @@
-# 开发/测试用的 cordis patch 覆盖层。
+# 开发/测试用的 cordis patch 覆盖层 —— **这是一份示例，不要直接拿它启动**。
 #
-# 用途：给测试宿主打开「宿主半区热重载」，让改完 `lib/*.js` 立即生效，
-# 不必重启 Harness（重启会掐断正在跑的 agent 会话）。
+# 作用：给测试宿主打开「宿主半区热重载」——改完 lib/*.js 立即生效，不必重启 Harness
+#（重启会掐断正在跑的 agent 会话）。只改 lib/client.js 不需要它，刷新浏览器即可。
 #
-# 为什么需要显式加这一行：profile 虽然声明了 `patchReload: live`，但启动时创建
-# cordis-plugin-hmr 用的是 `{ root: [] }`，而 `Hmr.Config.base` 是必填的——创建失败
-# 被 catch 吞掉，于是 HMR 服务根本不存在，`watchUserPatches` 也连带跳过（它要求
-# `ctx.get("hmr")` 存在）。这里补上 `base`，HMR 才真正工作。
+# 用法：把下面 base 里的 /PATH/TO/... 换成你本机的绝对路径（用正斜杠，且**必须保留
+# file:// 前缀**），然后：
+#     dsh --profile web --patch scripts/dev-overlay.yml --port 43121 --no-open
 #
-# 用法（测试宿主）：
-#   dsh --profile web --patch scripts/dev-overlay.yml --port 43121 --no-open
+# 或者更省事：直接跑 scripts/dev-host.ps1 —— 它按脚本自身位置算出路径，生成一份已
+# gitignore 的 dev-overlay.local.yml 再启动，不需要你手改这个文件。
 #
-# ⚠️ `base` 会被 `new URL(base, ctx.baseUrl)` 解析后再 fileURLToPath，所以**必须写成
-# file:// URL**；写成 `D:/...` 会被当成 `d:` scheme 而抛 ERR_INVALID_URL_SCHEME。
+# ── 为什么是「覆盖 hmr 行」而不是「insert 一行新插件」──────────────────────
+# profile 里本来就有这一行，但它只给了 root、**没给 base**：
+#     - id: hmr
+#       name: '@deepseek-ai/dsh-hmr'
+#       config:
+#         root: []
+# 而 @deepseek-ai/dsh-hmr 的 Config 里 base 是必填的（z.string()，没有默认值）：
+#     static Config = z.object({ base: z.string(), root: z.array(String).default(["."]), ... })
+# 配置校验不过 → 该行不激活 → ctx.get("hmr") 为空 → 模块热重载根本不存在。
+# 所以正确做法是**覆盖这一行的 config**，把 base 补上。
+#
+# ⚠️ 别照抄老写法：insert 一行 name: '@deepseek-ai/cordis-plugin-hmr'。那个包在
+# DSH 0.2.0-rc.2 里已经不存在了（只剩在 dsh.bak-0.1.0-rc.8 的旧安装里），插进去的
+# 行会静默失效——宿主照常启动、不报错、也没有热重载，最难查。
+#
+# ── 两个容易踩的点 ──────────────────────────────────────────────────────
+# 1) base 会被 new URL(base, ctx.baseUrl) 解析后再 fileURLToPath，所以**必须写成
+#    file:// URL**；写成 D:/... 会被当成 d: scheme 而抛 ERR_INVALID_URL_SCHEME。
+# 2) 覆盖一行时 config 是**整体替换**、不做深合并，所以 root / debounce 要一起写全。
 #
 # 不用于生产：正式启动走用户 profile 的 patch 层，本文件只在测试时通过 --patch 注入。
-- insert:
-    - id: gmm-dev-hmr
-      name: '@deepseek-ai/cordis-plugin-hmr'
-      config:
-        base: file:///D:/Workspace/myworks/dsh-game-material-master/lib
-        root: ["."]
-        debounce: 150
+- id: hmr
+  name: '@deepseek-ai/dsh-hmr'
+  config:
+    base: file:///PATH/TO/dsh-game-material-master/lib
+    root: ["."]
+    debounce: 150
