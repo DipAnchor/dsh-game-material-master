@@ -22,7 +22,8 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, sequenceJobsRoot } from "./config.js";
-import { downloadVideo, normalizeDuration, normalizeResolution, queryVideo, retrieveFile, submitVideo } from "./minimax.js";
+import { normalizeDuration, normalizeResolution } from "./minimax.js";
+import { videoEngine } from "./engine/index.js";
 import { extractFrames, fileSize, mimeOf, toJpegDataUri } from "./media.js";
 import { composeSheet, keyGreen, type SheetRow } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -453,11 +454,7 @@ async function submitSequenceVideo(jobId: string): Promise<void> {
   await writeSequenceJob(job);
 
   try {
-    const taskId = await submitVideo({
-      baseUrl: config.minimaxBaseUrl,
-      apiKey: config.minimaxApiKey,
-      model,
-      timeoutMs: config.minimaxTimeoutMs,
+    const taskId = await videoEngine(config).submit({
       prompt: built.prompt,
       firstFrameImage,
       lastFrameImage,
@@ -532,15 +529,11 @@ export async function pollSequenceOnce(jobId: string): Promise<void> {
   }
 
   const config = await loadConfig();
-  const request = {
-    baseUrl: config.minimaxBaseUrl,
-    apiKey: config.minimaxApiKey,
-    model: job.settings.model || config.minimaxModel,
-    timeoutMs: config.minimaxTimeoutMs
-  };
+  // 轮询可能跨进程重启，所以上下文要从任务快照重建，不能只靠内存。
+  const video = videoEngine(config, { model: job.settings.model || config.minimaxModel });
 
   try {
-    const query = await queryVideo({ ...request, taskId });
+    const query = await video.query(taskId);
     if (query.status === "failed") {
       const fresh = await readSequenceJob(jobId);
       if (fresh === undefined) return;
@@ -558,9 +551,7 @@ export async function pollSequenceOnce(jobId: string): Promise<void> {
       return;
     }
 
-    const url = query.videoUrl ?? (query.fileId !== undefined ? await retrieveFile({ ...request, fileId: query.fileId }) : undefined);
-    if (url === undefined) throw new Error("任务已成功，但响应里既没有视频地址也没有 file_id");
-    const bytes = await downloadVideo(url, config.minimaxTimeoutMs);
+    const bytes = await video.fetch(query);
     const relative = "videos/output.mp4";
     await writeFile(sequenceAssetPath(jobId, relative), bytes);
 

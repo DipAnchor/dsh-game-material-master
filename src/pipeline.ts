@@ -32,8 +32,7 @@ import {
   turnOrder,
   type TurnDirection
 } from "./directions.js";
-import { generateImage } from "./ark.js";
-import { downloadVideo, queryVideo, retrieveFile, submitVideo } from "./minimax.js";
+import { imageEngine, videoEngine } from "./engine/index.js";
 import { extractFrames, mimeOf, toDataUri, toJpegDataUri } from "./media.js";
 import { composeSheet, keyGreen, type SheetRow } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -93,24 +92,6 @@ export function listJobs(projectId: string): JobInfo[] {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function arkRequest(config: Config) {
-  return {
-    baseUrl: config.arkBaseUrl,
-    apiKey: config.arkApiKey,
-    model: config.arkModel,
-    timeoutMs: config.arkTimeoutMs
-  };
-}
-
-function miniMaxRequest(config: Config) {
-  return {
-    baseUrl: config.minimaxBaseUrl,
-    apiKey: config.minimaxApiKey,
-    model: config.minimaxModel,
-    timeoutMs: config.minimaxTimeoutMs
-  };
 }
 
 /** 把一个后台任务登记进运行表并立刻返回；重复的 taskKey 会被拒绝。 */
@@ -213,13 +194,7 @@ async function generateOne(projectId: string, key: string, promptOverride?: stri
   const startedAt = Date.now();
   try {
     const images = await Promise.all(refs.map((file) => toDataUri(file, mimeOf(file))));
-    const result = await generateImage({
-      ...arkRequest(config),
-      prompt,
-      images,
-      size: config.arkSize,
-      watermark: config.arkWatermark
-    });
+    const result = await imageEngine(config).generate({ prompt, images });
 
     const relative = `images/${key}.${result.ext}`;
     await mkdir(dirname(assetPath(projectId, relative)), { recursive: true });
@@ -363,8 +338,7 @@ async function submitTurnVideo(projectId: string): Promise<void> {
   try {
     const jpegRel = "videos/turn-first-frame.jpg";
     const dataUri = await toJpegDataUri(assetPath(projectId, first.file), assetPath(projectId, jpegRel));
-    const taskId = await submitVideo({
-      ...miniMaxRequest(config),
+    const taskId = await videoEngine(config).submit({
       prompt,
       firstFrameImage: dataUri,
       duration: config.minimaxDuration,
@@ -400,9 +374,9 @@ async function pollTurnVideoOnce(projectId: string, config: Config): Promise<voi
   const taskId = project.turn?.video?.taskId;
   if (project.turn?.video?.status !== "running" || taskId === undefined) return;
 
-  const request = miniMaxRequest(config);
+  const video = videoEngine(config);
   try {
-    const query = await queryVideo({ ...request, taskId });
+    const query = await video.query(taskId);
     if (query.status === "failed") {
       const reason = query.error ?? "MiniMax 报告该任务失败";
       await patchProject(projectId, (current) => {
@@ -418,12 +392,7 @@ async function pollTurnVideoOnce(projectId: string, config: Config): Promise<voi
       return;
     }
 
-    const url =
-      query.videoUrl ??
-      (query.fileId !== undefined ? await retrieveFile({ ...request, fileId: query.fileId }) : undefined);
-    if (url === undefined) throw new Error("任务已成功，但响应里既没有视频地址也没有 file_id");
-
-    const bytes = await downloadVideo(url, config.minimaxTimeoutMs);
+    const bytes = await video.fetch(query);
     const relative = "videos/turn.mp4";
     await writeFile(assetPath(projectId, relative), bytes);
     await patchProject(projectId, (current) => {
@@ -753,8 +722,7 @@ export function startVideos(projectId: string, keys?: string[]): { started: bool
         const jpegRel = `videos/${key}-first-frame.jpg`;
         const dataUri = await toJpegDataUri(assetPath(projectId, image.file), assetPath(projectId, jpegRel));
         const prompt = (fresh.prompts.videoPerDirection?.[key] ?? fresh.prompts.video).trim();
-        const taskId = await submitVideo({
-          ...miniMaxRequest(config),
+        const taskId = await videoEngine(config).submit({
           prompt,
           firstFrameImage: dataUri,
           duration: config.minimaxDuration,
@@ -826,12 +794,13 @@ export async function pollVideosOnce(projectId: string): Promise<void> {
     return;
   }
 
+  const video = videoEngine(config);
   await Promise.all(
     pending.map(async (key) => {
       const label = directionOf(key)?.label ?? key;
       const taskId = project.videos[key].taskId as string;
       try {
-        const query = await queryVideo({ ...miniMaxRequest(config), taskId });
+        const query = await video.query(taskId);
         if (query.status === "failed") {
           const reason = query.error ?? "MiniMax 报告该任务失败";
           await patchProject(projectId, (current) => {
@@ -847,13 +816,7 @@ export async function pollVideosOnce(projectId: string): Promise<void> {
           return;
         }
 
-        // v2（H3）在查询结果里直接给地址；v1 还要拿 file_id 再换一次。
-        const url =
-          query.videoUrl ??
-          (query.fileId !== undefined ? await retrieveFile({ ...miniMaxRequest(config), fileId: query.fileId }) : undefined);
-        if (url === undefined) throw new Error("任务已成功，但响应里既没有视频地址也没有 file_id");
-
-        const bytes = await downloadVideo(url, config.minimaxTimeoutMs);
+        const bytes = await video.fetch(query);
         const relative = `videos/${key}.mp4`;
         await writeFile(assetPath(projectId, relative), bytes);
         await patchProject(projectId, (current) => {

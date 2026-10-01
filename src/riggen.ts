@@ -29,7 +29,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, rigJobsRoot } from "./config.js";
-import { generateImage } from "./ark.js";
+import { imageEngine } from "./engine/index.js";
 import { decodeToRgba, mimeOf, toDataUri } from "./media.js";
 import { encodePng } from "./png.js";
 import { appendJobLog, messageOf, readJson, writeJsonAtomic, type JobLogEntry } from "./jsonio.js";
@@ -1912,15 +1912,10 @@ export async function redrawRigPart(
   const dataUri = `data:image/png;base64,${encodePng(square.image.data, square.image.width, square.image.height).toString("base64")}`;
 
   const redrawModel = config.arkRedrawModel.trim() === "" ? config.arkModel : config.arkRedrawModel.trim();
-  const result = await generateImage({
-    baseUrl: config.arkBaseUrl,
-    apiKey: config.arkApiKey,
+  const result = await imageEngine(config).generate({
     model: redrawModel,
     prompt: buildRedrawPrompt(prompt, { role: part.role }),
-    images: [dataUri],
-    size: config.arkSize,
-    watermark: config.arkWatermark,
-    timeoutMs: config.arkTimeoutMs
+    images: [dataUri]
   });
 
   // 模型交回来的图要落盘才能解码（解码器是 ffmpeg，吃文件路径）。
@@ -2935,15 +2930,11 @@ export async function generateSheet(jobId: string): Promise<void> {
 
   try {
     const reference = await toDataUri(rigAssetPath(jobId, job.source.file), mimeOf(job.source.file));
-    const result = await generateImage({
-      baseUrl: config.arkBaseUrl,
-      apiKey: config.arkApiKey,
-      model: config.arkModel,
+    const result = await imageEngine(config).generate({
       prompt,
       images: [reference],
-      size: job.settings.size || config.arkSize,
-      watermark: job.settings.watermark,
-      timeoutMs: config.arkTimeoutMs
+      size: job.settings.size || undefined,
+      watermark: job.settings.watermark
     });
     const relative = `sheet/parts-sheet.${result.ext}`;
     await mkdir(join(rigJobDir(jobId), "sheet"), { recursive: true });

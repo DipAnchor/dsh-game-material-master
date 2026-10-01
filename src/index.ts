@@ -17,7 +17,7 @@ import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { ARK_MODEL_PRESETS, DEFAULT_CONFIG, ROW_ORDER_VERSION, MINIMAX_HOST_PRESETS, MINIMAX_MODEL_PRESETS, loadConfig, maskConfig, migrateLegacyDataRoot, projectsRoot, saveConfig } from "./config.js";
 import { DEFAULT_ROW_ORDER, DEFAULT_TURN_PROMPT, DEFAULT_VIDEO_PROMPT, DIRECTION_KEYS, TURN_DIRECTION_DEFAULT, TURN_FRAME_COUNT_MAX, TURN_FRAME_COUNT_MIN, defaultImagePrompts, directionOf } from "./directions.js";
 import { checkFfmpeg } from "./media.js";
-import { testArk } from "./ark.js";
+import { imageEngine, videoEngine } from "./engine/index.js";
 import {
   COMP_SHARE_BASE_URL,
   COMP_SHARE_MODEL_ID,
@@ -25,8 +25,7 @@ import {
   isCompshareModel,
   normalizeDuration,
   normalizeResolution,
-  pathPrefixOf,
-  testMiniMax
+  pathPrefixOf
 } from "./minimax.js";
 import {
   applyTurnPicks,
@@ -295,21 +294,11 @@ export class GameStudioGateway extends TypertRemoteService {
     const config = await loadConfig();
     if (config.arkApiKey.trim() === "")
       throw new Error("尚未配置火山方舟 API Key");
-    return testArk({
-      baseUrl: config.arkBaseUrl,
-      apiKey: config.arkApiKey,
-      model: config.arkModel,
-      timeoutMs: config.arkTimeoutMs
-    });
+    return imageEngine(config).test();
   }
   async testMinimax() {
     const config = await loadConfig();
-    return testMiniMax({
-      baseUrl: config.minimaxBaseUrl,
-      apiKey: config.minimaxApiKey,
-      model: config.minimaxModel,
-      timeoutMs: config.minimaxTimeoutMs
-    });
+    return videoEngine(config).test();
   }
   /**
    * 浏览器半区上报自己的 `location.origin`。

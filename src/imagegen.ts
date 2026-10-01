@@ -17,7 +17,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { imageJobsRoot, loadConfig } from "./config.js";
-import { generateImage } from "./ark.js";
+import { imageEngine } from "./engine/index.js";
 import { decodeToRgba, mimeOf, toDataUri } from "./media.js";
 import { keyGreen } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -286,15 +286,11 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
 
   try {
     const refs = await Promise.all(job.refs.map((ref) => toDataUri(imageAssetPath(jobId, ref.file), mimeOf(ref.file))));
-    const result = await generateImage({
-      baseUrl: config.arkBaseUrl,
-      apiKey: config.arkApiKey,
-      model: config.arkModel,
+    const result = await imageEngine(config).generate({
       prompt,
       images: refs,
-      size: job.settings.size || config.arkSize,
-      watermark: job.settings.watermark,
-      timeoutMs: config.arkTimeoutMs
+      size: job.settings.size || undefined,
+      watermark: job.settings.watermark
     });
 
     const relative = `out/img-${String(index).padStart(2, "0")}.${result.ext}`;
