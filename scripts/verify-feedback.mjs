@@ -984,4 +984,142 @@ section("深链接");
   CLICK_LISTENERS.splice(0, CLICK_LISTENERS.length);
 }
 
+// ── 设置页：渠道层三块 ──────────────────────────────────────────────────
+//
+// 设置页此前**没有任何自动测试**：它不在 verify-client 的文本契约里，也不在
+// verify-feedback 的渲染范围里（那份只渲染工作台的各阶段）。渠道层改造把这块界面
+// 整个换掉了，所以补上真渲染——三层结构、用途绑定、编辑器展开都要看得见。
+section("设置页：渠道 / 供应商 / 用途绑定");
+{
+  const Settings = REGISTERED["settings.section"];
+  check("挂上了 settings.section 设置页组件", typeof Settings === "function", typeof Settings);
+
+  const settingsText = (tree) =>
+    collect(tree, () => true)
+      .map((node) => textOf(node))
+      .join(" | ");
+
+  const fakeConfig = {
+    ffmpeg: { ok: true, version: "6.0" },
+    dataRoot: "D:\\DSH\\game-material-master",
+    cellWidth: 128,
+    cellHeight: 128,
+    frameCount: 8,
+    concurrency: 4,
+    keyLow: 0,
+    keyHigh: 255,
+    despill: 0.2,
+    edgeShrink: 1,
+    bgTolerance: 0,
+    workingLongEdge: 512,
+    pixelSize: 0,
+    fillRatio: 1,
+    bottomMargin: 0,
+    channels: [
+      {
+        id: "ark-cn",
+        protocol: "ark",
+        protocolLabel: "火山方舟 Seedream",
+        name: "火山方舟",
+        baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+        options: {},
+        models: [{ id: "doubao-seedream-4-0-250828", label: "Seedream 4.0" }]
+      },
+      {
+        id: "mm-intl",
+        protocol: "minimax",
+        protocolLabel: "MiniMax",
+        name: "MiniMax 国际站",
+        baseUrl: "https://api.minimaxi.com",
+        options: {},
+        models: [{ id: "MiniMax-H3", label: "MiniMax-H3" }]
+      }
+    ],
+    suppliers: [
+      { id: "ark-main", name: "方舟默认账号", channelId: "ark-cn", keySet: true, keyHint: "…abcd" },
+      { id: "mm-main", name: "MiniMax 默认账号", channelId: "mm-intl", keySet: false, keyHint: "" }
+    ],
+    protocols: [
+      { id: "ark", label: "火山方舟 Seedream", capability: "image" },
+      { id: "minimax", label: "MiniMax", capability: "video" }
+    ],
+    bind: {
+      image: {
+        default: { supplierId: "ark-main" },
+        sheet: { supplierId: "ark-main" },
+        redraw: { supplierId: "ark-main", model: "doubao-seedream-4-0-250828" }
+      },
+      video: { default: { supplierId: "mm-main" } }
+    }
+  };
+  // Hook 槽位顺序：0 config / 1 notice / 2 testing / 3 openChannel / 4 channelDraft /
+  // 5 openSupplier / 6 supplierDraft / 7 keyDrafts / 8 modelDraft。
+  const renderSettings = (slots) => {
+    HOOK.slots = slots;
+    HOOK.cursor = 0;
+    return Settings({ api });
+  };
+
+  const page = settingsText(renderSettings([fakeConfig]));
+  check("分组头报出渠道与模型总数", page.includes("2 个渠道 · 2 个模型"));
+  check(
+    "渠道行带协议标签、名称与地址",
+    page.includes("火山方舟 Seedream") && page.includes("火山方舟") && page.includes("ark.cn-beijing.volces.com")
+  );
+  check("供应商行区分「已设置密钥」与「未设置密钥」", page.includes("密钥已设置 …abcd") && page.includes("未设置密钥"));
+  check(
+    "四处用途绑定都在",
+    ["生图默认", "拆件摊平图", "部件重绘", "视频默认"].every((title) => page.includes(title))
+  );
+  check("绑定下拉把供应商与它所属的渠道写在一起", page.includes("方舟默认账号 · 火山方舟"));
+  check("未配置密钥的供应商在下拉里被标出来", page.includes("MiniMax 默认账号 · MiniMax 国际站（未配置密钥）"));
+  check("默认不展开任何编辑器", page.includes("保存渠道") === false && page.includes("保存供应商") === false);
+
+  // 展开渠道编辑器：字段、模型目录、保存/取消都要出现
+  const editing = settingsText(
+    renderSettings([
+      fakeConfig,
+      null,
+      null,
+      "ark-cn",
+      {
+        id: "ark-cn",
+        protocol: "ark",
+        name: "火山方舟",
+        baseUrl: "https://ark.example/v1",
+        models: [{ id: "m1", label: "模型一" }]
+      }
+    ])
+  );
+  check("展开渠道编辑器后出现保存与取消", editing.includes("保存渠道") && editing.includes("取消"));
+  check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
+  check("模型目录列出已有模型并可移除", editing.includes("模型一（m1）") && editing.includes("移除"));
+  check("模型目录可以添加模型", editing.includes("添加模型"));
+
+  // 展开供应商编辑器：密钥区只在「编辑已有供应商」时出现
+  const supplierEditing = settingsText(
+    renderSettings([
+      fakeConfig,
+      null,
+      null,
+      null,
+      null,
+      "ark-main",
+      { id: "ark-main", name: "方舟默认账号", channelId: "ark-cn" }
+    ])
+  );
+  check("展开供应商编辑器后出现保存与取消", supplierEditing.includes("保存供应商") && supplierEditing.includes("取消"));
+  check(
+    "已有供应商才显示密钥区",
+    supplierEditing.includes("API 密钥") && supplierEditing.includes("保存密钥") && supplierEditing.includes("清除")
+  );
+  const newSupplier = settingsText(
+    renderSettings([fakeConfig, null, null, null, null, "__new__", { id: "", name: "", channelId: "ark-cn" }])
+  );
+  check(
+    "新增供应商时不显示密钥区（还没有 id 可写）",
+    newSupplier.includes("新增供应商") && newSupplier.includes("API 密钥") === false
+  );
+}
+
 report();

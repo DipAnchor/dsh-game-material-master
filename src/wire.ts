@@ -518,9 +518,8 @@ interface MethodSpec {
 export const METHODS: MethodSpec[] = [
   { method: "getConfig", result: configViewSchema },
   { method: "saveConfig", payload: saveConfigSchema, result: configViewSchema },
-  { method: "testArk", result: jsonObject },
-  { method: "testMinimax", result: jsonObject },
   // 渠道层。密钥不进 `saveConfig` 的白名单，只能从 `saveSupplierKey` 走。
+  // 「测试连接」的粒度是**供应商**——一次真实调用必须有 key，只有渠道测不了。
   { method: "testSupplier", payload: channelIdSchema, result: jsonObject },
   { method: "saveChannel", payload: saveChannelSchema, result: configViewSchema },
   { method: "deleteChannel", payload: channelIdSchema, result: configViewSchema },

@@ -64,10 +64,10 @@ async function main() {
   check("注册了一条 prefix 路由", captured.routes.length === 1 && captured.routes[0].kind === "prefix", JSON.stringify(captured.routes.map((r) => r.path)));
 
   const invocations = captured.manifest?.invocations ?? [];
-  // 97 → 104：渠道层加了 7 个方法（testSupplier / saveChannel / deleteChannel /
-  // saveSupplier / deleteSupplier / saveSupplierKey / bindSupplier）。
-  // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2 与 §9。
-  check("manifest 方法数为 104", invocations.length === 104, `实际 ${invocations.length}`);
+  // 97 → 104（U1）→ 102（U2）：U1 加了 7 个渠道层方法；U2 退役了 testArk / testMinimax
+  // ——「测试连接」的粒度变成供应商（一次真实调用必须有 key，只有渠道测不了）。
+  // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2、§4.7 与 §9。
+  check("manifest 方法数为 102", invocations.length === 102, `实际 ${invocations.length}`);
   const ids = new Set(invocations.map((i) => i.id));
   check("方法 id 唯一", ids.size === invocations.length);
   check("所有方法都声明在 gameStudio 服务下", invocations.every((i) => i.service === "gameStudio" && i.namespace === "gameStudio"));
