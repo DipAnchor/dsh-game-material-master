@@ -67,7 +67,7 @@ async function main() {
   // 97 → 104（U1）→ 102（U2 前半）→ 103（U2 后半）：U1 加了 7 个渠道层方法；U2 退役了
   // testArk / testMinimax（「测试连接」的粒度变成供应商）；U2 后半加了 probeModels（检测模型）。
   // 这是**验收门本身的变化**，理由见 docs/渠道层与设置页改造方案.md §3.2、§4.4、§4.7 与 §9。
-  check("manifest 方法数为 103", invocations.length === 103, `实际 ${invocations.length}`);
+  check("manifest 方法数为 101", invocations.length === 101, `实际 ${invocations.length}`);
   const ids = new Set(invocations.map((i) => i.id));
   check("方法 id 唯一", ids.size === invocations.length);
   check("所有方法都声明在 gameStudio 服务下", invocations.every((i) => i.service === "gameStudio" && i.namespace === "gameStudio"));
@@ -192,8 +192,8 @@ async function main() {
   check("默认开启背景空间分割", initial.bgTolerance === 90, String(initial.bgTolerance));
   check(
     "初始未配置 Key",
-    initial.suppliers.every((supplier) => supplier.keySet === false),
-    JSON.stringify(initial.suppliers.map((supplier) => `${supplier.id}:${supplier.keySet}`))
+    initial.channels.every((channel) => channel.keySet === false),
+    JSON.stringify(initial.channels.map((channel) => `${channel.id}:${channel.keySet}`))
   );
   check(
     "视图里不再有扁平字段（U4 清干净了）",
@@ -220,17 +220,51 @@ async function main() {
   );
   check("官方 H3 能力仍是官方档位", videoCapabilityOf("MiniMax-H3").resolutions.join(",") === "2K,768P");
 
-  // 密钥：粒度是**供应商**，语义与旧的扁平 key 一致（不带＝保持原值，空串＝清除）。
-  const arkSupplierId = initial.bind.image.default.supplierId;
-  const keyed = await studio.saveSupplierKey({ id: arkSupplierId, apiKey: "test-ark-key-1234" });
-  const keyedSupplier = keyed.suppliers.find((supplier) => supplier.id === arkSupplierId);
-  check("保存后标记为已配置", keyedSupplier?.keySet === true);
-  check("Key 只回传尾号提示", keyedSupplier?.keyHint === "…1234", keyedSupplier?.keyHint);
+  // 密钥：粒度是**渠道**（「供应商」那一层已经并回来了），语义与旧的扁平 key 一致：
+  // 不带＝保持原值，空串＝清除。所以「存一条渠道」这个动作必须能表达这三种情况。
+  const arkChannelId = initial.bind.image.default.channelId;
+  /**
+   * 把 minimax 渠道指到某个地址（本机假网关用）。
+   *
+   * U4 之前这是 `saveConfig({ minimaxBaseUrl })` 一句话；扁平字段删掉之后，地址与密钥
+   * 都归渠道，所以要先读回这条渠道再整条写回去。`apiKey` 不给＝保持原值，空串＝清除。
+   */
+  const pointVideoChannel = async (baseUrl, apiKey) => {
+    const current = (await studio.getConfig()).channels.find((c) => c.protocol === "minimax");
+    return studio.saveChannel({
+      id: current.id,
+      protocol: current.protocol,
+      name: current.name,
+      baseUrl,
+      models: current.models.map((model) => ({ id: model.id, label: model.label })),
+      ...(apiKey === undefined ? {} : { apiKey })
+    });
+  };
+  const keyTarget = initial.channels.find((channel) => channel.id === arkChannelId);
+  const resaveChannel = (apiKey) =>
+    studio.saveChannel({
+      id: keyTarget.id,
+      protocol: keyTarget.protocol,
+      name: keyTarget.name,
+      baseUrl: keyTarget.baseUrl,
+      models: keyTarget.models.map((model) => ({ id: model.id, label: model.label })),
+      ...(apiKey === undefined ? {} : { apiKey })
+    });
+  const keyed = await resaveChannel("test-ark-key-1234");
+  const keyedChannel = keyed.channels.find((channel) => channel.id === arkChannelId);
+  check("保存后标记为已配置", keyedChannel?.keySet === true);
+  check("Key 只回传尾号提示", keyedChannel?.keyHint === "…1234", keyedChannel?.keyHint);
   check("返回体里没有明文 Key", JSON.stringify(keyed).includes("test-ark-key-1234") === false);
-  const kept = await studio.saveSupplierKey({ id: arkSupplierId });
-  check("不带 apiKey 的保存不会清空 Key", kept.suppliers.find((s) => s.id === arkSupplierId)?.keySet === true);
-  const cleared = await studio.saveSupplierKey({ id: arkSupplierId, apiKey: "" });
-  check("传空串即清除 Key", cleared.suppliers.find((s) => s.id === arkSupplierId)?.keySet === false);
+  const kept = await resaveChannel(undefined);
+  check("不带 apiKey 的保存不会清空 Key", kept.channels.find((c) => c.id === arkChannelId)?.keySet === true);
+  const cleared = await resaveChannel("");
+  check("传空串即清除 Key", cleared.channels.find((c) => c.id === arkChannelId)?.keySet === false);
+
+  // 「显示密钥」：编辑器要把明文拉回来填进输入框，视图里只有尾号。
+  await resaveChannel("test-ark-key-1234");
+  const revealed = await studio.revealChannelKey({ id: arkChannelId });
+  check("revealChannelKey 回明文（供「显示密钥」）", revealed.apiKey === "test-ark-key-1234", revealed.apiKey);
+  await resaveChannel("");
 
   const saved = await studio.saveConfig({ cellWidth: 300 });
   check("尺寸改动已生效", saved.cellWidth === 300);
@@ -268,19 +302,51 @@ async function main() {
   });
   check(
     "老配置的扁平字段被折成两条渠道",
-    Object.keys(legacyConfig.channels).length === 2 && legacyConfig.channelVersion === 1,
+    Object.keys(legacyConfig.channels).length === 2 && legacyConfig.channelVersion === 2,
     JSON.stringify(Object.keys(legacyConfig.channels))
   );
   check(
-    "老配置的 Key 落成供应商密钥",
-    legacyConfig.channelSecrets["ark-main"] === "sk-legacy-123456" &&
-      legacyConfig.channelSecrets["mm-main"] === "mm-legacy-123456"
+    "老配置的 Key 直接落在渠道上（v2 没有供应商那一层）",
+    legacyConfig.channelSecrets["ark-cn"] === "sk-legacy-123456" &&
+      legacyConfig.channelSecrets["mm-intl"] === "mm-legacy-123456"
   );
+  check(
+    "绑定写的是渠道 id",
+    legacyConfig.bind.image.default.channelId === "ark-cn" && legacyConfig.bind.video.default.channelId === "mm-intl"
+  );
+  // v1 → v2：供应商那一层并回渠道。一条渠道上有多把 key 时，
+  // **优先留被用途绑定引用的那把**（那才是真在用的）。
+  const v1 = normalizeConfig({
+    channelVersion: 1,
+    channels: {
+      "ark-cn": { protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [{ id: "m1" }] }
+    },
+    suppliers: {
+      "ark-main": { name: "默认账号", channelId: "ark-cn" },
+      "ark-alt": { name: "备用账号", channelId: "ark-cn" }
+    },
+    channelSecrets: { "ark-main": "sk-alt-first", "ark-alt": "sk-绑定的那把" },
+    bind: {
+      image: { default: { supplierId: "ark-alt" }, sheet: { supplierId: "ark-alt" }, redraw: { supplierId: "ark-alt" } },
+      video: { default: { supplierId: "ark-alt" } }
+    }
+  });
+  check(
+    "v1 的供应商并回渠道：绑定改写成渠道 id",
+    v1.bind.image.default.channelId === "ark-cn" && v1.bind.video.default.channelId === "ark-cn",
+    JSON.stringify(v1.bind.image.default)
+  );
+  check(
+    "一条渠道多把 key 时留被绑定的那把",
+    v1.channelSecrets["ark-cn"] === "sk-绑定的那把",
+    v1.channelSecrets["ark-cn"]
+  );
+  check("v1 迁移后不再有 suppliers 字段", v1.suppliers === undefined && v1.channelVersion === 2);
   check(
     "已迁移过的配置再归一化不会重复迁移",
     Object.keys(normalizeConfig(legacyConfig).channels).length === 2
   );
-  const emptied = normalizeConfig({ ...legacyConfig, channels: {}, suppliers: {}, channelSecrets: {}, bind: legacyConfig.bind });
+  const emptied = normalizeConfig({ ...legacyConfig, channels: {}, channelSecrets: {}, bind: legacyConfig.bind });
   check("用户手动删光渠道后不会被重新种回来", Object.keys(emptied.channels).length === 0);
 
   // ── 2b. 渠道层：结构、脱敏与引用保护 ──────────────────────────────────
@@ -296,19 +362,19 @@ async function main() {
     arkOriginal !== undefined && migrated.channels.some((c) => c.protocol === "minimax"),
     JSON.stringify(migrated.channels.map((c) => `${c.id}:${c.protocol}`))
   );
-  check("新装就有对应的供应商", migrated.suppliers.length === 2, JSON.stringify(migrated.suppliers.map((s) => s.id)));
   check(
-    "三个用途绑定都指到了供应商",
-    migrated.bind.image.default.supplierId !== "" &&
-      migrated.bind.image.sheet.supplierId !== "" &&
-      migrated.bind.image.redraw.supplierId !== "" &&
-      migrated.bind.video.default.supplierId !== ""
+    "新装的两条渠道都带密钥状态字段",
+    migrated.channels.every((c) => typeof c.keySet === "boolean" && typeof c.keyHint === "string"),
+    JSON.stringify(migrated.channels.map((c) => `${c.id}:${c.keySet}`))
+  );
+  check(
+    "四个用途绑定都指到了渠道",
+    migrated.bind.image.default.channelId !== "" &&
+      migrated.bind.image.sheet.channelId !== "" &&
+      migrated.bind.image.redraw.channelId !== "" &&
+      migrated.bind.video.default.channelId !== ""
   );
   check("视图里没有 channelSecrets（...rest 没把密钥漏出去）", migrated.channelSecrets === undefined);
-  check(
-    "供应商带密钥状态与提示",
-    migrated.suppliers.every((s) => typeof s.keySet === "boolean" && typeof s.keyHint === "string")
-  );
   check(
     "渠道的模型带上显示名与能力（界面据此渲染控件）",
     migrated.channels.every((c) =>
@@ -332,58 +398,46 @@ async function main() {
     channelWrite.resolved.image.default.baseUrl
   );
 
-  // 密钥：粒度是供应商，且永不回传本体。
+  // 密钥：粒度是**渠道**，且永不回传本体。第二条渠道用来验「改一条不影响另一条」。
   await studio.saveChannel({
     id: "second-ark",
     protocol: "ark",
     name: "第二条渠道",
     baseUrl: "https://second.example/v1",
-    models: ["second-model"]
+    models: ["second-model"],
+    apiKey: "sk-second-abcdef"
   });
-  await studio.saveSupplier({ id: "second-account", name: "第二个账号", channelId: "second-ark" });
-  await studio.saveSupplierKey({ id: "second-account", apiKey: "sk-second-abcdef" });
   const keySet = await studio.getConfig();
-  check("saveSupplierKey 只影响该供应商", keySet.suppliers.find((s) => s.id === "second-account")?.keySet === true);
+  check("saveChannel 带上 apiKey 即落成密钥", keySet.channels.find((c) => c.id === "second-ark")?.keySet === true);
   check(
-    "别的供应商的密钥状态不受影响",
-    keySet.suppliers.find((s) => s.id === arkSupplierId)?.keySet === false,
-    JSON.stringify(keySet.suppliers.map((s) => `${s.id}:${s.keySet}`))
+    "别的渠道的密钥状态不受影响",
+    keySet.channels.find((c) => c.id === arkChannelId)?.keySet === false,
+    JSON.stringify(keySet.channels.map((c) => `${c.id}:${c.keySet}`))
   );
-  await studio.saveSupplierKey({ id: "second-account", apiKey: "" });
-  const keyCleared = await studio.getConfig();
-  check("saveSupplierKey 传空串即清除", keyCleared.suppliers.find((s) => s.id === "second-account")?.keySet === false);
-  check("整份视图里找不到密钥本体", JSON.stringify(keyCleared).includes("sk-second-abcdef") === false);
+  check("整份视图里找不到密钥本体", JSON.stringify(keySet).includes("sk-second-abcdef") === false);
 
-  // 引用保护：删被指向的渠道 / 删被绑定的供应商都要被拒
-  let channelRefused = "";
-  try {
-    await studio.deleteChannel({ id: "second-ark" });
-  } catch (error) {
-    channelRefused = String(error?.message ?? error);
-  }
-  check("删除仍被供应商指向的渠道会被拒绝", /仍被供应商指向/.test(channelRefused), channelRefused);
+  // 引用保护：删被用途绑定的渠道必须被拒，并说清是哪个用途。
   let defaultRefused = "";
   try {
-    await studio.deleteSupplier({ id: keySet.bind.image.default.supplierId });
+    await studio.deleteChannel({ id: keySet.bind.image.default.channelId });
   } catch (error) {
     defaultRefused = String(error?.message ?? error);
   }
-  check("删除仍被用途绑定的供应商会被拒绝", /仍被用途绑定引用/.test(defaultRefused), defaultRefused);
-  await studio.deleteSupplier({ id: "second-account" });
+  check("删除仍被用途绑定的渠道会被拒绝", /仍被用途绑定引用/.test(defaultRefused), defaultRefused);
   await studio.deleteChannel({ id: "second-ark" });
   const cleaned = await studio.getConfig();
   check("删干净后只剩迁移出来的两条渠道", cleaned.channels.length === 2, String(cleaned.channels.length));
 
   // 用途绑定：能给单个用途配模型
-  await studio.bindSupplier({
+  await studio.bindChannel({
     capability: "image",
     purpose: "redraw",
-    supplierId: cleaned.bind.image.default.supplierId,
+    channelId: cleaned.bind.image.default.channelId,
     model: "doubao-seedream-4-5-251128"
   });
   const bound = await studio.getConfig();
   check(
-    "bindSupplier 能改用途绑定并带上模型",
+    "bindChannel 能改用途绑定并带上模型",
     bound.bind.image.redraw.model === "doubao-seedream-4-5-251128",
     JSON.stringify(bound.bind.image.redraw)
   );
@@ -400,19 +454,18 @@ async function main() {
   // ── 2c. 模型解析：反查渠道与四级回落 ──────────────────────────────────
   console.log("2c) 模型解析：反查渠道与四级回落");
   {
-    // 第二条渠道放一个「只在它这里存在」的模型。
+    // 第二条渠道放一个「只在它这里存在」的模型，并带上密钥——反查优先挑有密钥的那条。
     await studio.saveChannel({
       id: "other-ark",
       protocol: "ark",
       name: "另一条方舟渠道",
       baseUrl: "https://other.example/v1",
-      models: ["other-model"]
+      models: ["other-model"],
+      apiKey: "sk-other-key"
     });
-    await studio.saveSupplier({ id: "other-account", name: "另一账号", channelId: "other-ark" });
-    await studio.saveSupplierKey({ id: "other-account", apiKey: "sk-other-key" });
 
-    // ③ 绑定里钉了一个**属于别条渠道**的模型 → 必须走到那条渠道的地址与密钥上去。
-    await studio.bindSupplier({ capability: "image", purpose: "sheet", supplierId: "ark-main", model: "other-model" });
+    // ③ 绑定里钉了一个**只在另一条渠道上存在**的模型 → 必须走到那条渠道的地址与密钥上去。
+    await studio.bindChannel({ capability: "image", purpose: "sheet", channelId: "ark-cn", model: "other-model" });
     const bound = await studio.getConfig();
     check(
       "③ 反查渠道：绑定钉的模型落在别条渠道，就归那条渠道的地址与密钥",
@@ -436,16 +489,11 @@ async function main() {
       JSON.stringify(bound.resolved.image.default)
     );
 
-    // 复原：sheet 改回默认供应商且不钉模型，删掉一次性渠道。
-    await studio.bindSupplier({ capability: "image", purpose: "sheet", supplierId: bound.bind.image.default.supplierId });
-    await studio.deleteSupplier({ id: "other-account" });
+    // 复原：sheet 改回不钉模型，删掉一次性渠道。
+    await studio.bindChannel({ capability: "image", purpose: "sheet", channelId: bound.bind.image.default.channelId });
     await studio.deleteChannel({ id: "other-ark" });
     const cleaned = await studio.getConfig();
-    check(
-      "2c 用完的渠道与供应商都清掉了",
-      cleaned.channels.length === 2 && cleaned.suppliers.length === 2,
-      `${cleaned.channels.length} / ${cleaned.suppliers.length}`
-    );
+    check("2c 用完的渠道都清掉了", cleaned.channels.length === 2, String(cleaned.channels.length));
   }
 
   // ── 3. 项目 CRUD ──────────────────────────────────────────────────────
@@ -980,17 +1028,21 @@ async function main() {
   });
   await new Promise((resolve) => fakeGateway.listen(0, "127.0.0.1", resolve));
   const gatewayPort = fakeGateway.address().port;
-  await studio.saveConfig({
-    minimaxApiKey: "fake-key-for-verification",
-    minimaxBaseUrl: `http://127.0.0.1:${gatewayPort}`
-  });
 
   console.log("9a) 检测模型（本地假网关，不联网）");
   {
     // MiniMax 的检测**不发网络请求**：它的 /models 只列聊天模型，实例直接给内置预设 + 说明。
-    // 但它仍然要求这个供应商配了密钥——没密钥就没有「用谁的 key 去问」可言。
-    await studio.saveSupplierKey({ id: "mm-main", apiKey: "fake-mm-key" });
-    const mmProbe = await studio.probeModels({ channelId: "mm-intl" });
+    // 但仍然要求这条渠道配了密钥——没密钥就没有「用谁的 key 去问」可言。
+    const mmChannel = (await studio.getConfig()).channels.find((c) => c.protocol === "minimax");
+    await studio.saveChannel({
+      id: mmChannel.id,
+      protocol: mmChannel.protocol,
+      name: mmChannel.name,
+      baseUrl: `http://127.0.0.1:${gatewayPort}`,
+      models: mmChannel.models.map((model) => ({ id: model.id, label: model.label })),
+      apiKey: "fake-mm-key"
+    });
+    const mmProbe = await studio.probeModels({ channelId: mmChannel.id });
     check(
       "MiniMax 的检测给内置预设并说明上游为什么不适用",
       mmProbe.models.length > 0 && /只列聊天模型/.test(mmProbe.note),
@@ -1002,7 +1054,7 @@ async function main() {
       `${mmProbe.protocol} ${mmProbe.baseUrl}`
     );
 
-    // 方舟的检测走真的 GET /models。用一次性渠道与供应商，不去动前面测试的状态。
+    // 方舟的检测走真的 GET /models。用一条一次性渠道，不去动前面测试的状态。
     await studio.saveChannel({
       id: "probe-ark",
       protocol: "ark",
@@ -1010,35 +1062,33 @@ async function main() {
       baseUrl: `http://127.0.0.1:${gatewayPort}`,
       models: ["placeholder"]
     });
-    await studio.saveSupplier({ id: "probe-account", name: "探测账号", channelId: "probe-ark" });
     await expectThrow(
       "没有密钥时检测被挡下并说清怎么办",
       () => studio.probeModels({ channelId: "probe-ark" }),
       "检测需要一把 API 密钥"
     );
 
-    await studio.saveSupplierKey({ id: "probe-account", apiKey: "fake-probe-key" });
-    const arkProbe = await studio.probeModels({ channelId: "probe-ark" });
+    // 编辑器里刚填、还没保存的密钥也能直接拿来检测（`apiKey` 随请求传进来）。
+    const arkProbe = await studio.probeModels({ channelId: "probe-ark", apiKey: "fake-probe-key" });
     check(
       "方舟的检测解析 data[].id",
       JSON.stringify(arkProbe.models.map((model) => model.id)) === JSON.stringify(["gateway-model-a", "gateway-model-b"]),
       JSON.stringify(arkProbe.models.map((model) => model.id))
     );
     check("上游清单里没见过的模型用 id 当显示名", arkProbe.models[0].label === "gateway-model-a", arkProbe.models[0].label);
-    check("检测用的供应商被回传（便于界面解释用了哪把 key）", arkProbe.supplierId === "probe-account", arkProbe.supplierId);
+    check("检测回传渠道 id（界面据此解释用了哪条渠道）", arkProbe.channelId === "probe-ark", arkProbe.channelId);
     await expectThrow(
       "未知协议被拒绝",
-      () => studio.probeModels({ protocol: "nope", baseUrl: "http://127.0.0.1:1", supplierId: "probe-account" }),
+      () => studio.probeModels({ protocol: "nope", baseUrl: "http://127.0.0.1:1", apiKey: "x" }),
       "未知协议"
     );
 
-    await studio.deleteSupplier({ id: "probe-account" });
     await studio.deleteChannel({ id: "probe-ark" });
     const afterProbe = await studio.getConfig();
     check(
-      "探测用完的渠道与供应商都清掉了",
-      afterProbe.channels.length === 2 && afterProbe.suppliers.length === 2,
-      `${afterProbe.channels.length} / ${afterProbe.suppliers.length}`
+      "探测用完的渠道清掉了（同时也要把探测用的 mm 渠道地址还原）",
+      afterProbe.channels.length === 2,
+      String(afterProbe.channels.length)
     );
   }
 
@@ -1109,7 +1159,7 @@ async function main() {
     await expectThrow("已完成的方向默认不重跑，并给出可读原因", () => studio.runVideos({ projectId, keys: ["front"] }), "都已经生成完成");
   } finally {
     await new Promise((resolve) => fakeGateway.close(resolve));
-    await studio.saveConfig({ minimaxBaseUrl: "https://api.minimaxi.com", clearMinimaxApiKey: true });
+    await pointVideoChannel("https://api.minimaxi.com", "");
   }
 
   // ── 9c. 阶段①的默认生成方式：转圈截帧 ─────────────────────────────────
@@ -1308,10 +1358,7 @@ async function main() {
       res.end(JSON.stringify({ base_resp: { status_code: 1004, status_msg: "invalid api key (verify)" } }));
     });
     await new Promise((resolve) => turnGateway.listen(0, "127.0.0.1", resolve));
-    await studio.saveConfig({
-      minimaxApiKey: "fake-key-for-verification",
-      minimaxBaseUrl: `http://127.0.0.1:${turnGateway.address().port}`
-    });
+    await pointVideoChannel(`http://127.0.0.1:${turnGateway.address().port}`, "fake-key-for-verification");
     try {
       const videoKick = await studio.runTurnVideo({ projectId });
       check("转圈视频提交被接受", videoKick.started === true, JSON.stringify(videoKick));
@@ -1342,7 +1389,7 @@ async function main() {
       check("转圈提示词可一键重置为默认", /旋转满一整圈/.test((await studio.getProject({ projectId })).prompts.turn));
     } finally {
       await new Promise((resolve) => turnGateway.close(resolve));
-      await studio.saveConfig({ minimaxBaseUrl: "https://api.minimaxi.com", clearMinimaxApiKey: true });
+      await pointVideoChannel("https://api.minimaxi.com", "");
     }
   }
 
@@ -1479,7 +1526,7 @@ async function main() {
   await studio.saveSequenceJob({ jobId: seqId, settings: { model: "" } });
   const unpinned = await studio.getSequenceJob({ jobId: seqId });
   check("任务清掉模型后不再钉住任何模型", unpinned.settings.model === "", unpinned.settings.model);
-  await studio.saveConfig({ minimaxModel: "MiniMax-H3", minimaxBaseUrl: "https://api.minimaxi.com" });
+  await pointVideoChannel("https://api.minimaxi.com");
 
   // 参考模式必须至少有一张参考图/一段参考视频
   await studio.saveSequenceJob({ jobId: seqId, mode: "reference" });

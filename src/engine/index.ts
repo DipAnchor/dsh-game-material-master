@@ -40,8 +40,7 @@ import type {
 export interface ResolvedTarget {
   protocol: string;
   context: InstanceContext;
-  /** 落到哪个供应商与渠道；回落到扁平字段时两者都是空串。 */
-  supplierId: string;
+  /** 落到哪条渠道；密钥就挂在它身上。 */
   channelId: string;
 }
 
@@ -56,29 +55,21 @@ const DEFAULT_TIMEOUT_MS = 180000;
 /**
  * 模型反查渠道（§2.1）。
  *
- * 同一个模型 id 落在**哪条渠道**，就归那条渠道的地址与协议。没有这一步，
+ * 同一个模型 id 落在**哪条渠道**，就归那条渠道的地址、协议与密钥。没有这一步，
  * 「任务里钉住的模型」会被打到另一条渠道的网关上——这就是历史上那个
  * 「任务存官方 H3 + 全局切优云智算 → cp.compshare.cn/v2/... 404」。
  *
  * 优先级：
- *   ① 绑定供应商自己的渠道里就有 → 用它（同 id 出现在多条渠道时，绑定即用户的意图）；
- *   ② 否则找第一条含它的渠道，并挑一个有密钥的供应商——否则解析出来是空 key。
+ *   ① 绑定那条渠道里就有 → 用它（同 id 出现在多条渠道时，绑定即用户的意图）；
+ *   ② 否则找第一条含它、**且配了密钥**的渠道——否则解析出来是空 key，请求注定 401。
  */
-function channelHostingModel(
-  config: Config,
-  model: string,
-  preferSupplierId: string
-): { supplierId: string; channelId: string } | undefined {
-  const preferred = preferSupplierId === "" ? undefined : config.suppliers[preferSupplierId];
-  if (preferred !== undefined && config.channels[preferred.channelId]?.models.some((entry) => entry.id === model)) {
-    return { supplierId: preferSupplierId, channelId: preferred.channelId };
+function channelHostingModel(config: Config, model: string, preferChannelId: string): string | undefined {
+  if (preferChannelId !== "" && config.channels[preferChannelId]?.models.some((entry) => entry.id === model)) {
+    return preferChannelId;
   }
   for (const [channelId, channel] of Object.entries(config.channels)) {
     if (!channel.models.some((entry) => entry.id === model)) continue;
-    const holder = Object.keys(config.suppliers).find(
-      (id) => config.suppliers[id]!.channelId === channelId && (config.channelSecrets[id] ?? "").trim() !== ""
-    );
-    if (holder !== undefined) return { supplierId: holder, channelId };
+    if ((config.channelSecrets[channelId] ?? "").trim() !== "") return channelId;
   }
   return undefined;
 }
@@ -86,8 +77,8 @@ function channelHostingModel(
 /**
  * 从渠道层解析一次调用。
  *
- * 顺序是 **模型 → 渠道 → 供应商**（见 docs/渠道层与设置页改造方案.md §2.1）：
- * 先定模型，再由模型所在的渠道决定地址与协议，最后由绑定决定用谁的 key。
+ * 顺序是 **模型 → 渠道**（见 docs/渠道层与设置页改造方案.md §2.1）：先定模型，再由模型
+ * 落在哪条渠道决定地址、协议与密钥；没指定模型就用绑定那条渠道的第一个。
  *
  * 解析不出来就**抛错**（U4 之前还能回落到扁平字段，现在没有那层了）。
  * `capability` 只用来把错误消息说得像人话——用户要知道是「生图」还是「部件重绘」没配。
@@ -95,18 +86,15 @@ function channelHostingModel(
 function resolveTarget(
   config: Config,
   slot: BindSlot | undefined,
-  override: { supplierId?: string; model?: string } | undefined,
+  override: { channelId?: string; model?: string } | undefined,
   capability: string
 ): ResolvedTarget {
-  const supplierId = (override?.supplierId ?? slot?.supplierId ?? "").trim();
+  const channelId = (override?.channelId ?? slot?.channelId ?? "").trim();
   const wanted = (override?.model ?? slot?.model ?? "").trim();
   // 模型反查渠道：指定了模型就以它落在哪条渠道为准。
-  const hosted = wanted === "" ? undefined : channelHostingModel(config, wanted, supplierId);
-  const actualSupplierId = hosted?.supplierId ?? supplierId;
-  const supplier = actualSupplierId === "" ? undefined : config.suppliers[actualSupplierId];
-  const channel =
-    hosted !== undefined ? config.channels[hosted.channelId] : supplier === undefined ? undefined : config.channels[supplier.channelId];
-  if (supplier !== undefined && channel !== undefined && channel.models.length > 0) {
+  const actualChannelId = (wanted === "" ? undefined : channelHostingModel(config, wanted, channelId)) ?? channelId;
+  const channel = actualChannelId === "" ? undefined : config.channels[actualChannelId];
+  if (channel !== undefined && channel.models.length > 0) {
     // 指定了模型就用指定的那一个（不在这里校验它是否在该渠道清单里——那是界面的活）；
     // 没指定才回落到渠道的第一个。这样「任务快照里的模型」不会被静默换掉。
     const model = wanted !== "" ? wanted : channel.models[0]!.id;
@@ -114,11 +102,10 @@ function resolveTarget(
     const { timeoutMs: channelTimeout, ...instanceOptions } = channel.options ?? NO_OPTIONS;
     return {
       protocol: channel.protocol,
-      supplierId: actualSupplierId,
-      channelId: hosted?.channelId ?? supplier.channelId,
+      channelId: actualChannelId,
       context: {
         baseUrl: channel.baseUrl,
-        apiKey: config.channelSecrets[actualSupplierId] ?? "",
+        apiKey: config.channelSecrets[actualChannelId] ?? "",
         model,
         timeoutMs:
           typeof channelTimeout === "number" && Number.isFinite(channelTimeout) ? channelTimeout : DEFAULT_TIMEOUT_MS,
@@ -129,7 +116,7 @@ function resolveTarget(
   // U4 之后没有扁平字段可以兜底了：解析不出来就是**配置没配好**，如实报错。
   // 消息要说清「去哪儿配」——这是用户唯一能动手的地方。
   throw new Error(
-    `${capability} 还没有可用的渠道：请在「设置 → 游戏素材大师」里配置一条渠道与一个供应商，` +
+    `${capability} 还没有可用的渠道：请在「设置 → 游戏素材大师」里添加一条渠道（地址 + 密钥），` +
       "并把对应的「用途绑定」指过去"
   );
 }
@@ -148,7 +135,7 @@ function describeCapability(purpose: ImagePurpose): string {
 export function resolveImageTarget(
   config: Config,
   purpose: ImagePurpose = "default",
-  override?: { supplierId?: string; model?: string }
+  override?: { channelId?: string; model?: string }
 ): ResolvedTarget {
   return resolveTarget(config, config.bind.image[purpose], override, describeCapability(purpose));
 }
@@ -156,7 +143,7 @@ export function resolveImageTarget(
 /** 解析一次图生视频调用。 */
 export function resolveVideoTarget(
   config: Config,
-  override?: { supplierId?: string; model?: string }
+  override?: { channelId?: string; model?: string }
 ): ResolvedTarget {
   return resolveTarget(config, config.bind.video.default, override, "图生视频");
 }

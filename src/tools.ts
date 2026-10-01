@@ -351,8 +351,8 @@ function intentFromCall(method: string, payload: Record<string, any>): OpenInten
 const CALL_DESCRIPTION = [
   "调用「游戏素材大师」插件的任意远程方法——插件界面上的每个功能都能在这里调用。",
   "配置：getConfig() / saveConfig(payload: 任意配置字段，如 cellWidth、concurrency、rowOrder…)【渠道与密钥不走这里】",
-  "渠道层：saveChannel({id?,protocol,name?,baseUrl,models:[{id,label?}],options?}) / deleteChannel({id}) / saveSupplier({id?,name?,channelId}) /",
-  "  deleteSupplier({id}) / saveSupplierKey({id,apiKey})【不带＝保持原值，空串＝清除】/ bindSupplier({capability:image|video,purpose:default|sheet|redraw,supplierId,model?}) / testSupplier({id})",
+  "渠道层：saveChannel({id?,protocol,name?,baseUrl,models:[{id,label?}],options?,apiKey?})【apiKey 不带＝保持原值，空串＝清除】/",
+  "  deleteChannel({id}) / bindChannel({capability:image|video,purpose:default|sheet|redraw,channelId,model?}) / testChannel({id}) / revealChannelKey({id}) /",
   "八方向图：listProjects() / createProject({name}) / getProject({projectId}) / deleteProject({projectId}) / renameProject({projectId,name}) /",
   "  uploadSource({projectId,name,data:base64}) / savePrompts({projectId,images?,video?,turn?,videoPerDirection?,suffix?,resetImagesToDefault?,resetVideoToDefault?,resetTurnToDefault?}) /",
   "  saveSettings({projectId,settings}) / setApproved({projectId,stage:images|videos|frames|sheet,key?,approved}) / revealProject({projectId}) /",

@@ -211,11 +211,11 @@ export class GameStudioGateway extends TypertRemoteService {
   /**
    * 渠道层的界面视图。
    *
-   * `channels` / `suppliers` / `bind` 在 `maskConfig` 里被**整组剔除**（否则 `channelSecrets`
-   * 会跟着 `...rest` 漏给浏览器），这里重新装配成界面要的形状：协议标签、密钥状态、用途绑定。
+   * `channels` / `bind` 在 `maskConfig` 里被**整组剔除**（否则 `channelSecrets` 会跟着
+   * `...rest` 漏给浏览器），这里重新装配成界面要的形状：协议标签、密钥状态、用途绑定。
    */
   /**
-   * 一条用途绑定解析后的去处（协议 / 供应商 / 渠道 / 模型 / 地址 / 有无密钥）。
+   * 一条用途绑定解析后的去处（协议 / 渠道 / 模型 / 地址 / 有无密钥）。
    *
    * 只用于展示与验收，不参与任何生成——真正的解析在 `engine/index.ts` 的
    * `resolveTarget` 里，这里只是把它跑一遍给人看。
@@ -228,7 +228,6 @@ export class GameStudioGateway extends TypertRemoteService {
           : resolveVideoTarget(config);
       return {
         protocol: target.protocol,
-        supplierId: target.supplierId,
         channelId: target.channelId,
         model: target.context.model,
         baseUrl: target.context.baseUrl,
@@ -242,28 +241,24 @@ export class GameStudioGateway extends TypertRemoteService {
   channelViewOf(config: Config) {
     const protocols = listProtocols();
     return {
-      channels: Object.entries(config.channels).map(([id, channel]) => ({
-        id,
-        protocol: channel.protocol,
-        protocolLabel: protocols.find((entry) => entry.id === channel.protocol)?.label ?? channel.protocol,
-        name: channel.name,
-        baseUrl: channel.baseUrl,
-        options: channel.options ?? {},
-        models: channel.models.map((model) => ({
-          id: model.id,
-          label: model.label ?? modelLabelOf(channel.protocol, model.id) ?? model.id,
-          // 界面据此决定渲染哪些控件：协议不支持就不渲染，不留「填了但没用」的输入框。
-          capability: modelCapabilityOf(channel.protocol, model.id) ?? null
-        }))
-      })),
-      suppliers: Object.entries(config.suppliers).map(([id, supplier]) => {
+      channels: Object.entries(config.channels).map(([id, channel]) => {
         const key = config.channelSecrets[id] ?? "";
         return {
           id,
-          name: supplier.name,
-          channelId: supplier.channelId,
+          protocol: channel.protocol,
+          protocolLabel: protocols.find((entry) => entry.id === channel.protocol)?.label ?? channel.protocol,
+          name: channel.name,
+          baseUrl: channel.baseUrl,
+          options: channel.options ?? {},
+          // 密钥就挂在渠道上：界面靠这两个字段告诉用户「配没配、尾号是多少」。
           keySet: key.trim() !== "",
-          keyHint: hintOf(key)
+          keyHint: hintOf(key),
+          models: channel.models.map((model) => ({
+            id: model.id,
+            label: model.label ?? modelLabelOf(channel.protocol, model.id) ?? model.id,
+            // 界面据此决定渲染哪些控件：协议不支持就不渲染，不留「填了但没用」的输入框。
+            capability: modelCapabilityOf(channel.protocol, model.id) ?? null
+          }))
         };
       }),
       bind: {
@@ -351,23 +346,34 @@ export class GameStudioGateway extends TypertRemoteService {
   //
   // 每个写方法都返回**整份配置视图**（和 `saveConfig` 一致），界面拿到就不必再拉一次。
 
-  /** 测一个供应商的连通性：用它指向的渠道与模型真发一次请求。 */
-  async testSupplier(payload) {
+  /** 测一条渠道的连通性：用它自己的地址、密钥与第一个模型真发一次请求。 */
+  async testChannel(payload) {
     const id = asString(asRecord(payload).id, "").trim();
     const config = await loadConfig();
-    const supplier = config.suppliers[id];
-    if (supplier === undefined) throw new Error(`供应商不存在：${id}`);
-    if ((config.channelSecrets[id] ?? "").trim() === "") throw new Error("该供应商尚未配置密钥");
-    const channel = config.channels[supplier.channelId];
-    if (channel === undefined) throw new Error(`渠道不存在：${supplier.channelId}`);
+    const channel = config.channels[id];
+    if (channel === undefined) throw new Error(`渠道不存在：${id}`);
+    if ((config.channelSecrets[id] ?? "").trim() === "") throw new Error("该渠道尚未配置密钥");
     const isImage = listProtocols().some((entry) => entry.id === channel.protocol && entry.capability === "image");
     const target = isImage
-      ? resolveImageTarget(config, "default", { supplierId: id })
-      : resolveVideoTarget(config, { supplierId: id });
+      ? resolveImageTarget(config, "default", { channelId: id })
+      : resolveVideoTarget(config, { channelId: id });
     return isImage ? imageEngine(target).test() : videoEngine(target).test();
   }
 
-  /** 新建 / 更新一条渠道。**不碰任何密钥**——密钥是供应商的属性。 */
+  /** 明文回读一条渠道的密钥，供编辑器里的「显示密钥」用。只在本机界面里回。 */
+  async revealChannelKey(payload) {
+    const id = asString(asRecord(payload).id, "").trim();
+    const config = await loadConfig();
+    if (config.channels[id] === undefined) throw new Error(`渠道不存在：${id}`);
+    return { apiKey: config.channelSecrets[id] ?? "" };
+  }
+
+  /**
+   * 新建 / 更新一条渠道。
+   *
+   * 密钥随渠道一起写（`apiKey` 省略＝**保持原值**，空串＝清除）——它是渠道的属性了。
+   * 但密钥仍然单独存进 `channelSecrets`，所以这条路径不会把没重填的密钥清掉。
+   */
   async saveChannel(payload) {
     const input = asRecord(payload);
     const config = await loadConfig();
@@ -391,87 +397,50 @@ export class GameStudioGateway extends TypertRemoteService {
       models,
       ...(Object.keys(options).length > 0 ? { options } : {})
     };
-    return this.decorateConfig(await saveConfig({ channels: { ...config.channels, [id]: channel } }));
-  }
-
-  /** 删除一条渠道；**仍被供应商指向就拒绝**，并说清是谁。 */
-  async deleteChannel(payload) {
-    const id = asString(asRecord(payload).id, "").trim();
-    const config = await loadConfig();
-    if (config.channels[id] === undefined) throw new Error(`渠道不存在：${id}`);
-    const holders = Object.entries(config.suppliers)
-      .filter(([, supplier]) => supplier.channelId === id)
-      .map(([supplierId]) => supplierId);
-    if (holders.length > 0)
-      throw new Error(`渠道「${id}」仍被供应商指向（${holders.join("、")}），请先改掉或删除它们`);
-    const channels = { ...config.channels };
-    delete channels[id];
-    return this.decorateConfig(await saveConfig({ channels }));
-  }
-
-  /** 新建 / 改名 / 换渠道。换渠道时密钥不动——这正是 key 与 url 解耦的用处。 */
-  async saveSupplier(payload) {
-    const input = asRecord(payload);
-    const config = await loadConfig();
-    const channelId = asString(input.channelId, "").trim();
-    if (config.channels[channelId] === undefined) throw new Error(`渠道不存在：${channelId}`);
-    const name = asString(input.name, "").trim().slice(0, 80);
-    const id = asString(input.id, "").trim() || uniqueId(slugId(name === "" ? "account" : name, "account"), Object.keys(config.suppliers));
-    if (!isChannelId(id)) throw new Error(`供应商 id 不合法：${id}`);
-    const suppliers = {
-      ...config.suppliers,
-      [id]: { name: name === "" ? id : name, channelId }
-    };
-    return this.decorateConfig(await saveConfig({ suppliers }));
-  }
-
-  /** 删除一个供应商；**仍被用途绑定引用就拒绝**，并列出是哪几个用途。 */
-  async deleteSupplier(payload) {
-    const id = asString(asRecord(payload).id, "").trim();
-    const config = await loadConfig();
-    if (config.suppliers[id] === undefined) throw new Error(`供应商不存在：${id}`);
-    const bound: string[] = [];
-    if (config.bind.image.default.supplierId === id) bound.push("生图默认");
-    if (config.bind.image.sheet.supplierId === id) bound.push("拆件");
-    if (config.bind.image.redraw.supplierId === id) bound.push("部件重绘");
-    if (config.bind.video.default.supplierId === id) bound.push("视频默认");
-    if (bound.length > 0)
-      throw new Error(`供应商「${id}」仍被用途绑定引用（${bound.join("、")}），请先改绑或删除该渠道`);
-    const suppliers = { ...config.suppliers };
-    delete suppliers[id];
     const channelSecrets = { ...config.channelSecrets };
-    delete channelSecrets[id];
-    return this.decorateConfig(await saveConfig({ suppliers, channelSecrets }));
-  }
-
-  /** 只写一个供应商的密钥。约定与旧的两个 key 一致：不带＝保持原值，空串＝清除。 */
-  async saveSupplierKey(payload) {
-    const input = asRecord(payload);
-    const id = asString(input.id, "").trim();
-    const config = await loadConfig();
-    if (config.suppliers[id] === undefined) throw new Error(`供应商不存在：${id}`);
-    const channelSecrets = { ...config.channelSecrets };
-    // 语义与旧的两个扁平 key 一致：**不带 = 保持原值，带空串 = 清除**。
-    // 早先这里把「不带」也当成空串处理，等于每次改个名字就把密钥清掉了。
+    // 与旧的两个扁平 key 同约定：**不带 = 保持原值，带空串 = 清除**。
     if (typeof input.apiKey === "string") {
       const apiKey = input.apiKey.trim();
       if (apiKey !== "") channelSecrets[id] = apiKey;
       else delete channelSecrets[id];
     }
-    return this.decorateConfig(await saveConfig({ channelSecrets }));
+    return this.decorateConfig(await saveConfig({ channels: { ...config.channels, [id]: channel }, channelSecrets }));
+  }
+
+  /**
+   * 删除一条渠道；**仍被用途绑定引用就拒绝**，并列出是哪几个用途。
+   *
+   * 「供应商」那一层并回渠道之后，这里成了唯一的引用保护点——以前渠道要防供应商指向它，
+   * 现在只需防用途绑定。
+   */
+  async deleteChannel(payload) {
+    const id = asString(asRecord(payload).id, "").trim();
+    const config = await loadConfig();
+    if (config.channels[id] === undefined) throw new Error(`渠道不存在：${id}`);
+    const bound: string[] = [];
+    if (config.bind.image.default.channelId === id) bound.push("生图默认");
+    if (config.bind.image.sheet.channelId === id) bound.push("拆件");
+    if (config.bind.image.redraw.channelId === id) bound.push("部件重绘");
+    if (config.bind.video.default.channelId === id) bound.push("视频默认");
+    if (bound.length > 0)
+      throw new Error(`渠道「${id}」仍被用途绑定引用（${bound.join("、")}），请先改绑或删掉那些绑定`);
+    const channels = { ...config.channels };
+    delete channels[id];
+    const channelSecrets = { ...config.channelSecrets };
+    delete channelSecrets[id];
+    return this.decorateConfig(await saveConfig({ channels, channelSecrets }));
   }
 
   /** 改一条用途绑定。`model` 省略＝用该渠道的第一个模型。 */
-  async bindSupplier(payload) {
+  async bindChannel(payload) {
     const input = asRecord(payload);
     const capability = asString(input.capability, "").trim();
     const purpose = asString(input.purpose, "").trim();
-    const supplierId = asString(input.supplierId, "").trim();
+    const channelId = asString(input.channelId, "").trim();
     const config = await loadConfig();
-    if (supplierId !== "" && config.suppliers[supplierId] === undefined)
-      throw new Error(`供应商不存在：${supplierId}`);
+    if (channelId !== "" && config.channels[channelId] === undefined) throw new Error(`渠道不存在：${channelId}`);
     const model = asString(input.model, "").trim();
-    const slot = model === "" ? { supplierId } : { supplierId, model };
+    const slot = model === "" ? { channelId } : { channelId, model };
     const bind = { image: { ...config.bind.image }, video: { ...config.bind.video } };
     if (capability === "image" && (purpose === "default" || purpose === "sheet" || purpose === "redraw")) {
       bind.image[purpose] = slot;
@@ -489,7 +458,7 @@ export class GameStudioGateway extends TypertRemoteService {
    * 结果只是**候选**，绝不自动写进配置：上游清单里可能有这个插件用不了的模型，
    * 也可能（MiniMax）列的压根不是这一路的模型——那种情况由 `note` 说清楚。
    *
-   * 密钥取自 `supplierId`；不给就找一个「有密钥且指向这个渠道」的供应商。
+   * 密钥优先用这次传进来的（编辑器里刚填、还没保存的那把），否则取渠道自己存的那把。
    */
   async probeModels(payload) {
     const input = asRecord(payload);
@@ -506,24 +475,16 @@ export class GameStudioGateway extends TypertRemoteService {
     ).replace(/\/+$/, "");
     if (baseUrl === "") throw new Error("还没有可用的地址：请先填 Base URL");
 
-    const wanted = asString(input.supplierId, "").trim();
-    const usable = Object.entries(config.suppliers).filter(
-      ([id, supplier]) =>
-        (saved === undefined || supplier.channelId === channelId) && (config.channelSecrets[id] ?? "").trim() !== ""
-    );
-    const supplierId = wanted !== "" ? wanted : usable[0]?.[0] ?? "";
-    if (supplierId === "") {
-      throw new Error("检测需要一把 API 密钥：请先在「供应商」里建一个账号并配好密钥");
-    }
-    const apiKey = config.channelSecrets[supplierId] ?? "";
-    if (apiKey.trim() === "") throw new Error(`供应商「${supplierId}」还没有密钥`);
+    // 编辑器里可能刚填了密钥还没保存——先用手上那把，否则回落到渠道已存的。
+    const apiKey = (asString(input.apiKey, "").trim() || config.channelSecrets[channelId] || "").trim();
+    if (apiKey === "") throw new Error("检测需要一把 API 密钥：请先在渠道里填好密钥");
 
     // 探测只是问一句「有哪些模型」，用不着动辄三分钟的生成超时。
     const result = await probeProtocolModels(protocol, { baseUrl, apiKey, model: "", timeoutMs: 30000, options: {} });
     return {
       protocol,
       baseUrl,
-      supplierId,
+      channelId,
       models: result.models.map((model) => ({ id: model.id, label: model.label })),
       note: result.note ?? ""
     };

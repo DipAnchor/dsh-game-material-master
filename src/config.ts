@@ -99,14 +99,17 @@ export async function migrateLegacyDataRoot(): Promise<boolean> {
  * 三层各自只管一件事：
  *
  *   - **供应商**（账号）= 一把 API Key，只回答「用谁的 key」；
- *   - **渠道** = 一个 API 地址 + 一个协议 + 一组模型，只回答「打到哪、怎么说」；
- *   - **模型条目** = 一个上游 model（加一个可选显示名）。
+ *   - **渠道** = 一个 API 地址 + **一把密钥** + 一个协议 + 一组模型。
  *
- * 基数：供应商 **N:1** 渠道（`supplier.channelId` 是单值）、渠道 **1:N** 模型、
- * 渠道 **1:N** 供应商（同一个端点可以配多把 key）。
+ * 基数：渠道 **1:N** 模型。
  *
- * 密钥单独一层（`channelSecrets`，**键是供应商**）：任何一次整对象写回都会覆盖
- * 没重填的字段；密钥外置之后，供应商与渠道对象里根本没有 secret。
+ * **密钥就挂在渠道上**（`channelSecrets`，键是渠道 id）。曾经中间还有一层「供应商」
+ * （key 挂在渠道上、多个账号共用一条地址），用户明确不要它——他要的形态是
+ * 「api 地址 + 密钥 = 渠道」，与 dsh-imagegen 一致。那层基数因此消失。
+ *
+ * 密钥为什么仍然外置成 `channelSecrets`、而不是塞进 `ChannelConfig`：写渠道时是
+ * **整对象写回**，密钥混在里面就会被「没重填的表单」清掉。单独一层之后，
+ * 保存渠道的代码路径根本碰不到它。
  *
  * 协议（`protocol`）配在**渠道**上——它描述的是「这个端点怎么说话」，
  * 而一个端点只有一种说法。所以模型条目里**没有**协议字段。
@@ -132,15 +135,9 @@ export interface ChannelConfig {
   options?: Record<string, unknown>;
 }
 
-/** 供应商 = 一个账号 / 一把 Key。 */
-export interface SupplierConfig {
-  name: string;
-  channelId: string;
-}
-
-/** 一个用途的绑定：用哪个供应商，以及（可选）默认用它的哪个模型。 */
+/** 一个用途的绑定：用哪个渠道，以及（可选）默认用它的哪个模型。 */
 export interface BindSlot {
-  supplierId: string;
+  channelId: string;
   /** 缺省 = 该渠道的第一个模型。 */
   model?: string;
 }
@@ -153,16 +150,19 @@ export interface BindConfig {
 }
 
 /**
- * 渠道层结构版本，语义同 `ROW_ORDER_VERSION`：
- * 迁移只在「版本号缺失」时发生一次，之后用户把渠道全删光也不会被重新种回来。
+ * 渠道层结构版本，语义同 `ROW_ORDER_VERSION`：迁移只在「版本号缺失 / 落后」时发生一次，
+ * 之后用户把渠道全删光也不会被重新种回来。
+ *
+ * - `0 → 2`：扁平字段（`arkApiKey` / `minimaxApiKey` …）折成渠道 + 密钥。
+ * - `1 → 2`：把「供应商」那一层并回渠道（密钥从供应商 id 改挂到渠道 id）。
  */
-export const CHANNEL_VERSION = 1;
+export const CHANNEL_VERSION = 2;
 
-/** 空的用途绑定（`supplierId` 为空串 = 没绑，解析回落到扁平字段）。 */
+/** 空的用途绑定（`channelId` 为空串 = 没绑）。 */
 export function emptyBindConfig(): BindConfig {
   return {
-    image: { default: { supplierId: "" }, sheet: { supplierId: "" }, redraw: { supplierId: "" } },
-    video: { default: { supplierId: "" } }
+    image: { default: { channelId: "" }, sheet: { channelId: "" }, redraw: { channelId: "" } },
+    video: { default: { channelId: "" } }
   };
 }
 
@@ -221,9 +221,8 @@ export interface Config {
    * 已经删干净（U4）。所以不存在「两边谁说了算」的问题：这里就是唯一真源。
    */
   channels: Record<string, ChannelConfig>;
-  suppliers: Record<string, SupplierConfig>;
   bind: BindConfig;
-  /** 密钥字典，**键是供应商 id**。永不回传浏览器（`maskConfig` 显式剔除）。 */
+  /** 密钥字典，**键是渠道 id**。永不回传浏览器（`maskConfig` 显式剔除）。 */
   channelSecrets: Record<string, string>;
   /** 渠道层结构版本；缺省即触发一次迁移。 */
   channelVersion: number;
@@ -252,7 +251,6 @@ export const DEFAULT_CONFIG: Config = {
   concurrency: 3,
 
   channels: {},
-  suppliers: {},
   bind: emptyBindConfig(),
   channelSecrets: {},
   // 默认给 **0**（＝没迁过）：全新安装与「只有扁平字段的老配置」走同一条迁移，
@@ -412,13 +410,13 @@ function normalizeChannel(id: string, value: unknown): ChannelConfig | undefined
   };
 }
 
-/** 绑定的供应商必须存在，否则视作没绑（解析会回落到扁平字段）。 */
-function normalizeSlot(value: unknown, suppliers: Record<string, SupplierConfig>): BindSlot {
+/** 绑定的渠道必须存在，否则视作没绑。 */
+function normalizeSlot(value: unknown, channels: Record<string, ChannelConfig>): BindSlot {
   const raw = asDict(value);
-  const supplierId = asString(raw.supplierId, "").trim();
-  if (supplierId === "" || suppliers[supplierId] === undefined) return { supplierId: "" };
+  const channelId = asString(raw.channelId, "").trim();
+  if (channelId === "" || channels[channelId] === undefined) return { channelId: "" };
   const model = asString(raw.model, "").trim();
-  return model === "" ? { supplierId } : { supplierId, model };
+  return model === "" ? { channelId } : { channelId, model };
 }
 
 /**
@@ -427,9 +425,7 @@ function normalizeSlot(value: unknown, suppliers: Record<string, SupplierConfig>
  * 和上面那组扁平字段一样是**逐字段重建**，所以新增字段必须显式列进这里——
  * 漏一个就等于「用户下次保存任意设置时把它清空」。
  */
-function normalizeChannelLayer(
-  raw: Record<string, unknown>
-): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+function normalizeChannelLayer(raw: Record<string, unknown>): Pick<Config, "channels" | "bind" | "channelSecrets"> {
   const channels: Record<string, ChannelConfig> = {};
   for (const [id, value] of Object.entries(asDict(raw.channels))) {
     if (!isChannelId(id)) continue;
@@ -437,45 +433,35 @@ function normalizeChannelLayer(
     if (channel !== undefined) channels[id] = channel;
   }
 
-  const suppliers: Record<string, SupplierConfig> = {};
-  for (const [id, value] of Object.entries(asDict(raw.suppliers))) {
-    if (!isChannelId(id)) continue;
-    const record = asDict(value);
-    const channelId = asString(record.channelId, "").trim();
-    if (channels[channelId] === undefined) continue; // 悬空引用 → 丢弃该供应商
-    suppliers[id] = { name: (asString(record.name, "").trim() || id).slice(0, 80), channelId };
-  }
-
   const bind = emptyBindConfig();
   const rawBind = asDict(raw.bind);
   const rawImage = asDict(rawBind.image);
-  bind.image.default = normalizeSlot(rawImage.default, suppliers);
-  bind.image.sheet = normalizeSlot(rawImage.sheet, suppliers);
-  bind.image.redraw = normalizeSlot(rawImage.redraw, suppliers);
-  bind.video.default = normalizeSlot(asDict(rawBind.video).default, suppliers);
+  bind.image.default = normalizeSlot(rawImage.default, channels);
+  bind.image.sheet = normalizeSlot(rawImage.sheet, channels);
+  bind.image.redraw = normalizeSlot(rawImage.redraw, channels);
+  bind.video.default = normalizeSlot(asDict(rawBind.video).default, channels);
 
   const channelSecrets: Record<string, string> = {};
   for (const [id, value] of Object.entries(asDict(raw.channelSecrets))) {
-    if (suppliers[id] === undefined) continue; // 密钥只对存在的供应商有意义
+    if (channels[id] === undefined) continue; // 密钥只对存在的渠道有意义
     if (typeof value === "string" && value.trim() !== "") channelSecrets[id] = value;
   }
 
-  return { channels, suppliers, bind, channelSecrets };
+  return { channels, bind, channelSecrets };
 }
 
 /**
- * 一次性迁移：把旧的扁平字段折成「一个渠道 + 一个供应商」，并绑好三个用途。
+ * `0 → 2` 一次性迁移：把旧的扁平字段折成两条渠道，并绑好用途。
  *
  * 两处刻意的取舍：
  *
- * - **只为「部件重绘」换模型，不另建供应商。** 旧配置只有一把 key；凭空造第二个账号会让
- *   两份 secret 各自漂移（改了主账号那个、重绘还在用旧 key）。
- * - id 固定（渠道 `ark-cn` / `mm-intl`，供应商 `ark-main` / `mm-main`），方便排错与文档引用。
+ * - **「部件重绘」只换模型，不另建渠道。** 旧配置只有一把 key；凭空造第二条渠道会让两份
+ *   密钥各自漂移（改了主渠道那把、重绘还在用旧 key）。
+ * - id 固定（`ark-cn` / `mm-intl`），方便排错与文档引用。
  */
-function migrateFlatToChannels(raw: Record<string, unknown>): Pick<Config, "channels" | "suppliers" | "bind" | "channelSecrets"> {
+function migrateFlatToChannels(raw: Record<string, unknown>): Pick<Config, "channels" | "bind" | "channelSecrets"> {
   const flat = legacyFlatOf(raw);
   const channels: Record<string, ChannelConfig> = {};
-  const suppliers: Record<string, SupplierConfig> = {};
   const channelSecrets: Record<string, string> = {};
   const bind = emptyBindConfig();
 
@@ -490,14 +476,11 @@ function migrateFlatToChannels(raw: Record<string, unknown>): Pick<Config, "chan
     models: imageModels,
     options: { size: flat.arkSize, watermark: flat.arkWatermark, timeoutMs: flat.arkTimeoutMs }
   };
-  suppliers["ark-main"] = { name: "默认账号", channelId: "ark-cn" };
-  if (flat.arkApiKey.trim() !== "") channelSecrets["ark-main"] = flat.arkApiKey;
-  bind.image.default = { supplierId: "ark-main" };
-  bind.image.sheet = { supplierId: "ark-main" };
+  if (flat.arkApiKey.trim() !== "") channelSecrets["ark-cn"] = flat.arkApiKey;
+  bind.image.default = { channelId: "ark-cn" };
+  bind.image.sheet = { channelId: "ark-cn" };
   bind.image.redraw =
-    redraw === "" || redraw === flat.arkModel
-      ? { supplierId: "ark-main" }
-      : { supplierId: "ark-main", model: redraw };
+    redraw === "" || redraw === flat.arkModel ? { channelId: "ark-cn" } : { channelId: "ark-cn", model: redraw };
 
   channels["mm-intl"] = {
     protocol: "minimax",
@@ -511,11 +494,56 @@ function migrateFlatToChannels(raw: Record<string, unknown>): Pick<Config, "chan
       timeoutMs: flat.minimaxTimeoutMs
     }
   };
-  suppliers["mm-main"] = { name: "默认账号", channelId: "mm-intl" };
-  if (flat.minimaxApiKey.trim() !== "") channelSecrets["mm-main"] = flat.minimaxApiKey;
-  bind.video.default = { supplierId: "mm-main" };
+  if (flat.minimaxApiKey.trim() !== "") channelSecrets["mm-intl"] = flat.minimaxApiKey;
+  bind.video.default = { channelId: "mm-intl" };
 
-  return { channels, suppliers, bind, channelSecrets };
+  return { channels, bind, channelSecrets };
+}
+
+/**
+ * `1 → 2`：把「供应商」这一层并回渠道。
+ *
+ * v1 的形状是 `suppliers: {id: {name, channelId}}` + `channelSecrets` 键是**供应商** id +
+ * `bind[*].supplierId` 指供应商。v2 一个渠道一把密钥、绑定直接写渠道 id。
+ *
+ * 一条渠道上挂了多把密钥时留哪把：**优先留被用途绑定引用的那把**（那才是真在用的），
+ * 其余按出现顺序补空。被丢掉的那些无法恢复——要降级先备份 config.json。
+ */
+function promoteSuppliers(raw: Record<string, unknown>): Pick<Config, "bind" | "channelSecrets"> {
+  const suppliers = asDict(raw.suppliers);
+  const secrets = asDict(raw.channelSecrets);
+  const channelOf = (id: string): string => asString(asDict(suppliers[id]).channelId, "").trim();
+  const referenced: string[] = [];
+
+  const readSlot = (value: unknown): BindSlot => {
+    const supplierId = asString(asDict(value).supplierId, "").trim();
+    const model = asString(asDict(value).model, "").trim();
+    const channelId = supplierId === "" ? "" : channelOf(supplierId);
+    if (channelId === "") return { channelId: "" };
+    if (!referenced.includes(supplierId)) referenced.push(supplierId);
+    return model === "" ? { channelId } : { channelId, model };
+  };
+
+  const bind = emptyBindConfig();
+  const rawBind = asDict(raw.bind);
+  const rawImage = asDict(rawBind.image);
+  bind.image.default = readSlot(rawImage.default);
+  bind.image.sheet = readSlot(rawImage.sheet);
+  bind.image.redraw = readSlot(rawImage.redraw);
+  bind.video.default = readSlot(asDict(rawBind.video).default);
+
+  const channelSecrets: Record<string, string> = {};
+  const put = (supplierId: string): void => {
+    const channelId = channelOf(supplierId);
+    const secret = secrets[supplierId];
+    if (channelId === "" || typeof secret !== "string" || secret.trim() === "") return;
+    if (channelSecrets[channelId] !== undefined) return;
+    channelSecrets[channelId] = secret;
+  };
+  for (const id of referenced) put(id); // ① 被用途绑定引用的优先
+  for (const id of Object.keys(suppliers)) put(id); // ② 其余按顺序补空
+
+  return { bind, channelSecrets };
 }
 
 /** 把任意读入的 JSON 收敛成一份合法配置，缺项一律回落默认值。 */
@@ -530,7 +558,7 @@ export function normalizeConfig(input: unknown): Config {
   // 上限必须严格大于下限，否则抠像区间为空；单独改任一项时自动让路。
   const keyHigh = Math.min(255, Math.max(keyLow + 1, asInt(raw.keyHigh, DEFAULT_CONFIG.keyHigh, 1, 255)));
 
-  const flat: Omit<Config, "channels" | "suppliers" | "bind" | "channelSecrets" | "channelVersion"> = {
+  const flat: Omit<Config, "channels" | "bind" | "channelSecrets" | "channelVersion"> = {
     cellWidth: asInt(raw.cellWidth, DEFAULT_CONFIG.cellWidth, 16, 2048),
     cellHeight: asInt(raw.cellHeight, DEFAULT_CONFIG.cellHeight, 16, 2048),
     frameCount: asInt(raw.frameCount, DEFAULT_CONFIG.frameCount, 1, 64),
@@ -553,12 +581,19 @@ export function normalizeConfig(input: unknown): Config {
     concurrency: asInt(raw.concurrency, DEFAULT_CONFIG.concurrency, 1, 8)
   };
 
-  // 渠道层：**版本号低于当前值就迁移一次**，把旧版扁平字段折成渠道；之后版本号落盘，
-  // 用户把渠道全删光也不会被重新种回来。全新安装（版本 0）走的是同一条路——
-  // 于是新装也自带两条默认渠道，而不是对着一个空列表发呆。
-  const layer = normalizeChannelLayer(raw);
+  // 渠道层：**版本号低于当前值就迁移一次**，之后版本号落盘，用户把渠道全删光也不会被
+  // 重新种回来。全新安装（版本 0）走的是同一条路——于是新装自带两条默认渠道，
+  // 而不是对着一个空列表发呆。
+  //
+  //   0 → 2  扁平字段折成渠道（密钥直接挂在渠道上）
+  //   1 → 2  「供应商」那一层并回渠道（密钥从供应商 id 改挂渠道 id）
+  const version = asInt(raw.channelVersion, 0, 0, 999);
   const channelLayer =
-    asInt(raw.channelVersion, 0, 0, 999) < CHANNEL_VERSION ? migrateFlatToChannels(raw) : layer;
+    version === 0
+      ? migrateFlatToChannels(raw)
+      : version < CHANNEL_VERSION
+        ? { ...normalizeChannelLayer(raw), ...promoteSuppliers(raw) }
+        : normalizeChannelLayer(raw);
 
   return { ...flat, ...channelLayer, channelVersion: CHANNEL_VERSION };
 }
@@ -602,18 +637,16 @@ export async function saveConfig(patch: Partial<Config>): Promise<Config> {
 /**
  * 回传给浏览器的脱敏视图。
  *
- * 渠道层这四项**整组排除**，由 `decorateConfig` 重新装配成界面要的形状：
- * `channelSecrets` 是密钥本体（`...rest` 会把它整个 spread 出去）；`channels` / `suppliers` /
- * `bind` 要带上 `keySet` / `keyHint` / 标签，不能直接透传内部结构。
+ * 渠道层这三项**整组排除**，由 `decorateConfig` 重新装配成界面要的形状：
+ * `channelSecrets` 是密钥本体（`...rest` 会把它整个 spread 出去）；`channels` / `bind`
+ * 要带上 `keySet` / `keyHint` / 标签，不能直接透传内部结构。
  */
-export interface ConfigView
-  extends Omit<Config, "channelSecrets" | "channels" | "suppliers" | "bind"> {}
+export interface ConfigView extends Omit<Config, "channelSecrets" | "channels" | "bind"> {}
 
 export function maskConfig(config: Config): ConfigView {
   const {
     channelSecrets: _channelSecrets,
     channels: _channels,
-    suppliers: _suppliers,
     bind: _bind,
     ...rest
   } = config;

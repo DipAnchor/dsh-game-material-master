@@ -223,9 +223,18 @@ async function main() {
     Object.keys(emptyIntake.known).join("、")
   );
 
-  // 配一把假 Key，blocker 应当消失。**粒度是供应商**——U4 之后扁平 key 已经不存在了。
+  // 配一把假 Key，blocker 应当消失。**粒度是渠道**——密钥现在挂在渠道上，
+  // 所以「配 Key」＝把这条渠道连同 `apiKey` 一起存回去。
   const keysConfig = await studio.getConfig();
-  await studio.saveSupplierKey({ id: keysConfig.bind.image.default.supplierId, apiKey: "sk-verify-tools" });
+  const boundChannel = keysConfig.channels.find((channel) => channel.id === keysConfig.bind.image.default.channelId);
+  await studio.saveChannel({
+    id: boundChannel.id,
+    protocol: boundChannel.protocol,
+    name: boundChannel.name,
+    baseUrl: boundChannel.baseUrl,
+    models: boundChannel.models.map((model) => ({ id: model.id, label: model.label })),
+    apiKey: "sk-verify-tools"
+  });
   const withKey = await run("game_material_intake", { module: "sprite" });
   check("配好 Key 后不再报 blocker", withKey.blockers.length === 0, withKey.blockers.join("；"));
 
