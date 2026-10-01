@@ -824,14 +824,80 @@
       return value;
     }
 
-    /** 只读展示当前生效的全局模型：模型只在设置里改，模块内不允许覆盖。 */
-    function GlobalModelField({ label, value }) {
+    /**
+     * 四级回落在界面上的镜像：一条用途绑定**解析后**实际走哪条渠道的哪个模型。
+     *
+     * 宿主算好放在视图的 `resolved` 里（`engine/index.ts` 的 `resolveTarget` 是唯一的
+     * 真源），界面只读它——不在这里重算一遍回落顺序，否则两边迟早会不一致。
+     */
+    function resolvedSlotOf(config, capability, purpose) {
+      return config?.resolved?.[capability]?.[purpose] ?? null;
+    }
+
+    /** 某个渠道下挂着的模型（带能力，用来决定渲染哪些控件）。 */
+    function modelsOfChannel(config, channelId) {
+      return (config?.channels ?? []).find((channel) => channel.id === channelId)?.models ?? [];
+    }
+
+    /**
+     * 「这次会走到哪」：用途绑定的去处、可选模型、以及最终模型的能力。
+     *
+     * 模型留空＝不钉，用宿主解析到的那个；填了就以填的为准——能力也按**填的那个**取，
+     * 否则控件会照另一个模型的档位画。
+     */
+    function effectiveTarget(config, capability, purpose, picked) {
+      const slot = resolvedSlotOf(config, capability, purpose);
+      const models = slot === null ? [] : modelsOfChannel(config, slot.channelId);
+      const wanted = (picked ?? "").trim();
+      const model = wanted !== "" ? wanted : slot?.model ?? "";
+      let caps = models.find((entry) => entry.id === model)?.capability ?? null;
+      if (caps === null) {
+        // 钉了一个不属于这条渠道的模型：宿主会按它**反查**别的渠道，界面拿不到那条
+        // 绑定的能力，于是尽力而为——所有渠道里找同名模型。
+        for (const channel of config?.channels ?? []) {
+          const hit = channel.models.find((entry) => entry.id === model);
+          if (hit?.capability != null) {
+            caps = hit.capability;
+            break;
+          }
+        }
+      }
+      return { slot, models, model, caps };
+    }
+
+    /**
+     * 模型下拉：**按渠道分组**（组名就是渠道名，走 `<optgroup>`）。
+     *
+     * 这是同一个控件的两个挂载点——模块表单里是「任务默认 / 本次执行」，空值表示
+     * 不钉模型、交给宿主四级回落。同一个模型 id 出现在多条渠道时两个选项的值相同，
+     * 浏览器取第一条；真正决定走哪条渠道的是宿主的反查（id 落在哪条渠道就归哪条）。
+     */
+    function ModelPicker({ config, label, value, emptyLabel, onChange, disabled, hint }) {
+      const channels = config?.channels ?? [];
       return h(
         "label",
         { className: "SPR_field" },
         h("span", { className: "SPR_fieldLabel" }, label),
-        h("input", { className: "SPR_input", value: value ?? "", readOnly: true, disabled: true }),
-        h("span", { className: "SPR_fieldLabel" }, "跟随即「设置 → 游戏素材大师」")
+        h(
+          "select",
+          {
+            className: "SPR_input",
+            value: value ?? "",
+            disabled: disabled === true || channels.length === 0,
+            onChange: (event) => onChange(event.target.value)
+          },
+          h("option", { value: "" }, emptyLabel ?? "（跟随用途绑定）"),
+          channels.map((channel) =>
+            h(
+              "optgroup",
+              { key: channel.id, label: channel.name },
+              channel.models.map((model) =>
+                h("option", { key: `${channel.id}:${model.id}`, value: model.id }, `${model.label}（${model.id}）`)
+              )
+            )
+          )
+        ),
+        hint === undefined ? null : h("span", { className: "SPR_fieldLabel" }, hint)
       );
     }
 
@@ -3815,7 +3881,18 @@
                     h(
                       "div",
                       { className: "SPR_fields" },
-                      h(GlobalModelField, { label: "生图模型", value: globalConfig?.arkModel ?? settingsDraft.model }),
+                      h(ModelPicker, {
+                        config: globalConfig,
+                        label: "生图模型",
+                        value: settingsDraft.model ?? "",
+                        emptyLabel: "（跟随「设置 → 用途绑定」）",
+                        hint: "改这里只影响这个任务；点生成时还可以再临时换",
+                        onChange: (next) => {
+                          const merged = { ...settingsDraft, model: next };
+                          setSettingsDraft(merged);
+                          void saveJob({ settings: merged });
+                        }
+                      }),
                       h(
                         "label",
                         { className: "SPR_field" },
@@ -3836,7 +3913,7 @@
                           disabled: promptDraft.trim() === "" || tasks.has(K_IMG_JOB),
                           onClick: () =>
                             void run(
-                              () => api.runImageJob({ jobId: job.id }),
+                              () => api.runImageJob({ jobId: job.id, model: settingsDraft.model || undefined }),
                               `已开始生成 ${settingsDraft.count ?? 1} 张`,
                               { key: K_IMG_JOB, label: `正在生成 ${settingsDraft.count ?? 1} 张图片…` }
                             )
@@ -3975,7 +4052,7 @@
                                         busy: tasks.has(itemKey),
                                         busyText: "正在提交…",
                                         onClick: () =>
-                                          void run(() => api.runImageJob({ jobId: job.id, count: index + 1 }), "已重新生成", {
+                                          void run(() => api.runImageJob({ jobId: job.id, count: index + 1, model: settingsDraft.model || undefined }), "已重新生成", {
                                             key: itemKey,
                                             label: `正在重新生成第 ${index + 1} 张…`
                                           })
@@ -4028,14 +4105,16 @@
         if (intent.module === "sequence" && typeof intent.jobId === "string") setJobId(intent.jobId);
       }, [intent]);
 
-      // 时长与分辨率档位跟着全局模型走（优云智算版 H3 多 1080P、可到 30 秒）。
-      const modelCaps = globalConfig?.minimaxCapabilities ?? {
+      // 时长与分辨率档位跟着**这次要用的模型**走，能力来自渠道里那个模型的
+      // `capability`（§4.7）：协议不支持就不渲染，不留「填了但没用」的输入框。
+      const videoTarget = effectiveTarget(globalConfig, "video", "default", settingsDraft.model);
+      const modelCaps = videoTarget.caps ?? {
         protocol: "v2",
         resolutions: ["768P", "2K", "1080P", "480P"],
         durationMin: 1,
         durationMax: 30
       };
-      const effectiveModel = globalConfig?.minimaxModel ?? settingsDraft.model ?? "";
+      const effectiveModel = videoTarget.model;
       const effectiveResolution = modelCaps.resolutions.includes(settingsDraft.resolution)
         ? settingsDraft.resolution
         : modelCaps.resolutions[0];
@@ -4297,7 +4376,18 @@
                     h(
                       "div",
                       { className: "SPR_fields" },
-                      h(GlobalModelField, { label: "视频模型", value: effectiveModel }),
+                      h(ModelPicker, {
+                          config: globalConfig,
+                          label: "视频模型",
+                          value: settingsDraft.model ?? "",
+                          emptyLabel: "（跟随「设置 → 用途绑定」）",
+                          hint: `当前会走：${effectiveModel || "未配置"}`,
+                          onChange: (next) => {
+                            const merged = { ...settingsDraft, model: next };
+                            setSettingsDraft(merged);
+                            void saveJob({ settings: merged });
+                          }
+                        }),
                       h(NumField, { label: `时长（秒，${modelCaps.durationMin}~${modelCaps.durationMax}）`, value: settingsDraft.duration ?? 5, min: modelCaps.durationMin, max: modelCaps.durationMax, onChange: (v) => { setSettingsDraft({ ...settingsDraft, duration: v }); void saveJob({ settings: { ...settingsDraft, duration: v } }); } }),
                       h(
                         "label",
@@ -4321,7 +4411,7 @@
                           busyText: "正在提交视频任务…",
                           disabled: promptDraft.trim() === "" || tasks.has(K_SEQ_VIDEO),
                           onClick: () =>
-                            void kickAndWatch(() => api.runSequenceVideo({ jobId: job.id }), "已提交视频任务，可离开本页", {
+                            void kickAndWatch(() => api.runSequenceVideo({ jobId: job.id, model: settingsDraft.model || undefined }), "已提交视频任务，可离开本页", {
                               key: K_SEQ_VIDEO,
                               label: "正在提交视频任务…"
                             })
@@ -6400,7 +6490,7 @@
             "data-testid": "rig-redraw-run",
             onClick: () =>
               void run(
-                () => api.runRigRedraw({ jobId: job.id, name: current, prompt: redrawPrompt.trim() }),
+                () => api.runRigRedraw({ jobId: job.id, name: current, prompt: redrawPrompt.trim(), model: job?.settings?.model || undefined }),
                 "已提交 AI 重绘（会花钱）",
                 K_RIG_REDRAW
               )
@@ -7562,7 +7652,7 @@
           "div",
           { className: "SPR_toolbar" },
           h("span", { className: "SPR_refRow" }, "生图模型"),
-          h("span", { className: "SPR_badge" }, globalConfig?.arkModel ?? job?.settings?.model ?? "未配置"),
+          h("span", { className: "SPR_badge" }, resolvedSlotOf(globalConfig, "image", "sheet")?.model ?? job?.settings?.model ?? "未配置"),
           h("span", { className: "SPR_refRow" }, "（模型在「设置 → 游戏素材大师」里改）"),
           h("span", { className: "SPR_spacer" }),
           headerButtons
@@ -7664,7 +7754,7 @@
                                 busyText: "正在拆件生图…",
                                 primary: true,
                                 disabled: job.sourceUrl === null || job.sourceUrl === undefined || busy,
-                                onClick: () => void run(() => api.runRigSheet({ jobId: job.id }), "已提交拆件生图", K_RIG_SHEET)
+                                onClick: () => void run(() => api.runRigSheet({ jobId: job.id, model: job?.settings?.model || undefined }), "已提交拆件生图", K_RIG_SHEET)
                               },
                               job.sheet?.status === "ready" ? "重新生成拆件图（会花钱）" : "生成拆件图（会花钱）"
                             ),
@@ -7678,6 +7768,14 @@
                               },
                               "用现有拆件图重新分割"
                             ),
+                            h(ModelPicker, {
+                              config: globalConfig,
+                              label: "拆件模型",
+                              value: settingsDraft.model ?? "",
+                              emptyLabel: "（跟随「设置 → 用途绑定」的拆件绑定）",
+                              hint: "拆件与部件重绘可以各用不同模型",
+                              onChange: (value) => setSettingsDraft({ ...settingsDraft, model: value })
+                            }),
                             h(NumField, { label: "网格列", value: settingsDraft.gridColumns ?? 4, min: 1, max: 8, onChange: (value) => setSettingsDraft({ ...settingsDraft, gridColumns: value }) }),
                             h(NumField, { label: "网格行", value: settingsDraft.gridRows ?? 4, min: 1, max: 8, onChange: (value) => setSettingsDraft({ ...settingsDraft, gridRows: value }) }),
                             h(NumField, { label: "底色容差", value: settingsDraft.backgroundTolerance ?? 30, min: 1, max: 200, onChange: (value) => setSettingsDraft({ ...settingsDraft, backgroundTolerance: value }) }),

@@ -1576,6 +1576,9 @@ export async function saveRigSettings(jobId: string, raw: Record<string, unknown
   job.settings.matchLongEdge = clampInt(raw.matchLongEdge, job.settings.matchLongEdge, 128, 1024);
   job.settings.size = typeof raw.size === "string" && raw.size.trim() !== "" ? raw.size : job.settings.size;
   job.settings.watermark = raw.watermark === true;
+  // 任务级默认模型（四级回落的第二级）。**必须显式搬运**：这个函数是逐字段赋值的，
+  // 漏一个字段就等于「用户每次保存设置都把它清空」。
+  if (typeof raw.model === "string") job.settings.model = raw.model.trim();
   if (Array.isArray(raw.animations)) {
     const list = raw.animations.filter((value): value is string => isAnimationId(value));
     job.settings.animations = list.length > 0 ? list : defaultAnimationIds();

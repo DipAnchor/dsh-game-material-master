@@ -772,7 +772,7 @@ function makeSequenceJob(overrides = {}) {
  *   11 useStudioIntent（深链接意图）
  * SequenceModule 的顺序与之完全相同。
  */
-function renderModule(component, job, tasks) {
+function renderModule(component, job, tasks, globalConfig) {
   HOOK.slots = [
     [job],
     job.id,
@@ -783,7 +783,9 @@ function renderModule(component, job, tasks) {
     job.suffix ?? "",
     { ...(job.settings ?? {}) },
     { ...(job.keying ?? {}) },
-    undefined,
+    // 槽位 9 = useGlobalConfig 的 useState：默认留空（模块要能在取不到配置时照样渲染），
+    // 传了就给模型下拉一个带渠道的配置。
+    globalConfig ?? undefined,
     tasks.map,
     null
   ];
@@ -802,6 +804,37 @@ if (typeof ImageModule === "function") {
       `调用 ${idle.hooks} 个 Hook，期望 ${EXPECTED_HOOKS.ImageModule}`
     );
     check("空闲时一个遮罩都没有", overlays(idle.tree).length === 0, `${overlays(idle.tree).length} 个`);
+
+    // 模型下拉：**按渠道分组**（组名就是渠道名），空值表示「不钉模型、交给四级回落」。
+    const grouped = renderModule(ImageModule, makeImageJob(), makeTasks(), {
+      channels: [
+        { id: "ark-cn", name: "火山方舟", models: [{ id: "doubao-seedream-4-5-251128", label: "Seedream 4.5", capability: {} }] },
+        { id: "other", name: "另一条渠道", models: [{ id: "other-model", label: "另一个模型", capability: {} }] }
+      ],
+      resolved: { image: { default: { channelId: "ark-cn", model: "doubao-seedream-4-5-251128" } } }
+    });
+    const groups = collect(grouped.tree, (node) => node.type === "optgroup");
+    check(
+      "模型下拉按渠道分组（组名是渠道名）",
+      groups.length === 2 && groups.map((node) => node.props.label).join("、") === "火山方舟、另一条渠道",
+      groups.map((node) => node.props.label).join("、")
+    );
+    check(
+      "每个组里是那条渠道的模型",
+      collect(groups[0] ?? {}, (node) => node.type === "option").map((node) => node.props.value).join(",") ===
+        "doubao-seedream-4-5-251128",
+      collect(groups[0] ?? {}, (node) => node.type === "option").map((node) => node.props.value).join(",")
+    );
+    check(
+      "模型下拉有一个「不钉模型」的空选项",
+      collect(grouped.tree, (node) => node.type === "option").some((node) => node.props.value === ""),
+      ""
+    );
+    check(
+      "取不到配置时模型下拉照样渲染（只是没有可选项）",
+      collect(idle.tree, (node) => node.type === "select").length >= 1,
+      ""
+    );
 
     const gen = renderModule(ImageModule, makeImageJob(), makeTasks(["img:job"]));
     check("整批生成时两张图都被盖住", overlays(gen.tree).length >= 2, `${overlays(gen.tree).length} 个`);
