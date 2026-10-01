@@ -22,7 +22,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, sequenceJobsRoot } from "./config.js";
-import { normalizeVideoParams, resolveVideoTarget, videoEngine } from "./engine/index.js";
+import { normalizeVideoParams, pickModel, resolveVideoTarget, videoEngine } from "./engine/index.js";
 import { extractFrames, fileSize, mimeOf, toJpegDataUri } from "./media.js";
 import { composeSheet, keyGreen, type SheetRow } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -43,6 +43,11 @@ export interface SequenceVideoState {
   remoteStatus?: string;
   file?: string;
   error?: string;
+  /**
+   * 提交这一段时用的模型。**必须落盘**：轮询要按同一个模型重建上下文
+   * （模型决定网关与协议路径），否则官方模型配优云智算网关就是 404。
+   */
+  model?: string;
   /** 验收打标（固定流程里的人工审核）。 */
   approved?: boolean;
   updatedAt?: number;
@@ -399,28 +404,27 @@ function assertIdle(jobId: string, taskKey: string, what: string): void {
 
 // ── 视频生成 ────────────────────────────────────────────────────────────
 
-export function startSequenceVideo(jobId: string): { started: boolean; reason?: string } {
+export function startSequenceVideo(jobId: string, options: { model?: string } = {}): { started: boolean; reason?: string } {
   try {
     assertIdle(jobId, "video:submit", "视频生成");
   } catch (error) {
     return { started: false, reason: messageOf(error) };
   }
-  const started = kick(jobId, "video:submit", () => submitSequenceVideo(jobId));
+  const started = kick(jobId, "video:submit", () => submitSequenceVideo(jobId, options.model));
   return started ? { started: true } : { started: false, reason: "视频任务已在进行中" };
 }
 
-async function submitSequenceVideo(jobId: string): Promise<void> {
+async function submitSequenceVideo(jobId: string, modelOverride?: string): Promise<void> {
   const job = await readSequenceJob(jobId);
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
   const config = await loadConfig();
 
-  // 渠道层解析：模型 → 渠道 → 供应商。模型与网关由同一条渠道提供，所以旧注释里
-  // 「任务快照和当前网关/Key 对不上就会 404」那类错配从根上消失了。
-  const target = resolveVideoTarget(config);
+  // 四级回落：本次执行 → 任务设置 → bind.video.default.model → 渠道第一个模型。
+  // 不再回写 job.settings.model，轮询改读 `job.video.model`（提交时落盘）。
+  const target = resolveVideoTarget(config, { model: pickModel(modelOverride, job.settings.model) });
   if (target.context.apiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
 
   const model = target.context.model;
-  job.settings.model = model;
   const params = normalizeVideoParams(model, {
     duration: job.settings.duration,
     resolution: job.settings.resolution
@@ -453,7 +457,7 @@ async function submitSequenceVideo(jobId: string): Promise<void> {
   }
 
   const previous = job.video;
-  job.video = { status: "running", remoteStatus: "提交中", updatedAt: Date.now() };
+  job.video = { status: "running", remoteStatus: "提交中", model: target.context.model, updatedAt: Date.now() };
   appendJobLog(job.log, "info", `提交视频任务（${job.mode === "frames" ? "首尾帧模式" : "参考模式"}）`);
   await writeSequenceJob(job);
 
@@ -534,7 +538,7 @@ export async function pollSequenceOnce(jobId: string): Promise<void> {
 
   const config = await loadConfig();
   // 轮询可能跨进程重启，所以上下文要从任务快照重建，不能只靠内存。
-  const video = videoEngine(resolveVideoTarget(config, { model: job.settings.model || undefined }));
+  const video = videoEngine(resolveVideoTarget(config, { model: job.video?.model }));
 
   try {
     const query = await video.query(taskId);

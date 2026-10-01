@@ -375,6 +375,57 @@ async function main() {
   const restored = await studio.getConfig();
   check("渠道复原成功（不影响后续流水线断言）", restored.arkBaseUrl === arkOriginal.baseUrl, restored.arkBaseUrl);
 
+  // ── 2c. 模型解析：反查渠道与四级回落 ──────────────────────────────────
+  console.log("2c) 模型解析：反查渠道与四级回落");
+  {
+    // 第二条渠道放一个「只在它这里存在」的模型。
+    await studio.saveChannel({
+      id: "other-ark",
+      protocol: "ark",
+      name: "另一条方舟渠道",
+      baseUrl: "https://other.example/v1",
+      models: ["other-model"]
+    });
+    await studio.saveSupplier({ id: "other-account", name: "另一账号", channelId: "other-ark" });
+    await studio.saveSupplierKey({ id: "other-account", apiKey: "sk-other-key" });
+
+    // ③ 绑定里钉了一个**属于别条渠道**的模型 → 必须走到那条渠道的地址与密钥上去。
+    await studio.bindSupplier({ capability: "image", purpose: "sheet", supplierId: "ark-main", model: "other-model" });
+    const bound = await studio.getConfig();
+    check(
+      "③ 反查渠道：绑定钉的模型落在别条渠道，就归那条渠道的地址与密钥",
+      bound.resolved.image.sheet.channelId === "other-ark" &&
+        bound.resolved.image.sheet.baseUrl === "https://other.example/v1" &&
+        bound.resolved.image.sheet.keySet === true,
+      JSON.stringify(bound.resolved.image.sheet)
+    );
+    check("③ 反查后协议仍由那条渠道决定", bound.resolved.image.sheet.protocol === "ark", bound.resolved.image.sheet.protocol);
+
+    // ④ 绑定没写模型 → 用渠道第一个模型。
+    const arkChannel = bound.channels.find((channel) => channel.id === "ark-cn");
+    check(
+      "④ 绑定不写模型时回落到渠道第一个模型",
+      bound.resolved.image.default.model === arkChannel.models[0].id,
+      `${bound.resolved.image.default.model} vs ${arkChannel.models[0].id}`
+    );
+    check(
+      "解析结果带出实际地址与有无密钥",
+      bound.resolved.image.default.baseUrl === arkChannel.baseUrl && typeof bound.resolved.image.default.keySet === "boolean",
+      JSON.stringify(bound.resolved.image.default)
+    );
+
+    // 复原：sheet 改回默认供应商且不钉模型，删掉一次性渠道。
+    await studio.bindSupplier({ capability: "image", purpose: "sheet", supplierId: bound.bind.image.default.supplierId });
+    await studio.deleteSupplier({ id: "other-account" });
+    await studio.deleteChannel({ id: "other-ark" });
+    const cleaned = await studio.getConfig();
+    check(
+      "2c 用完的渠道与供应商都清掉了",
+      cleaned.channels.length === 2 && cleaned.suppliers.length === 2,
+      `${cleaned.channels.length} / ${cleaned.suppliers.length}`
+    );
+  }
+
   // ── 3. 项目 CRUD ──────────────────────────────────────────────────────
   console.log("3) 项目增删改查");
   const created = await studio.createProject({ name: "冒烟测试角色" });
@@ -492,7 +543,7 @@ async function main() {
   // ── 7. 异步任务与错误传播 ──────────────────────────────────────────────
   console.log("7) 异步任务与错误传播（用无效 Key 真实打一次方舟接口）");
   await studio.saveConfig({ arkApiKey: "invalid-key-for-verification" });
-  const kicked = await studio.runImage({ projectId, key: "front" });
+  const kicked = await studio.runImage({ projectId, key: "front", model: "per-call-model" });
   check("生图任务被接受", kicked.started === true, JSON.stringify(kicked));
 
   let settled = null;
@@ -512,6 +563,11 @@ async function main() {
   check("任务在合理时间内收敛", settled !== null);
   if (settled !== null) {
     check("无效 Key 导致节点进入 error", settled.images.front.status === "error", settled.images.front.status);
+    check(
+      "① 本次执行的模型被记在节点上（四级回落的第一级）",
+      settled.images.front.model === "per-call-model",
+      settled.images.front.model
+    );
     check("错误信息可读且带原因", typeof settled.images.front.error === "string" && settled.images.front.error.length > 10, settled.images.front.error?.slice(0, 90));
     check("任务结束后运行表清空", (settled.jobs ?? []).length === 0, JSON.stringify(settled.jobs));
     check("失败被写入运行日志", settled.log.some((e) => e.level === "error"));
@@ -1296,14 +1352,17 @@ async function main() {
   check("参考图已记录", imageJob.refs.length === 1, `${imageJob.refs.length} 张`);
   check("图片任务带 assetBase", imageJob.assetBase.endsWith(`/image-assets/${imageId}/`), imageJob.assetBase);
 
-  // 生图模型是全局设置：客户端塞一个过期的模型 id，也必须被纠正回全局值。
-  await studio.saveImageJob({ jobId: imageId, settings: { model: "some-stale-model", size: "2K" } });
+  // 任务级模型由调用方决定（四级回落的第二级），宿主不再从全局配置单向覆盖。
+  // 这是 U3 的**行为变更**：原来那条「任务只跟随、不覆盖」是「只剩一个全局槽位」的产物。
+  await studio.saveImageJob({ jobId: imageId, settings: { model: "task-level-model", size: "2K" } });
   imageJob = await studio.getImageJob({ jobId: imageId });
-  check(
-    "图片任务的模型跟随全局设置",
-    imageJob.settings.model === (await studio.getConfig()).arkModel,
-    `${imageJob.settings.model} vs ${(await studio.getConfig()).arkModel}`
-  );
+  check("图片任务能写下自己的默认模型", imageJob.settings.model === "task-level-model", imageJob.settings.model);
+  await studio.saveImageJob({ jobId: imageId, settings: { size: "2K" } });
+  imageJob = await studio.getImageJob({ jobId: imageId });
+  check("不带 model 的保存不会清掉任务级模型", imageJob.settings.model === "task-level-model", imageJob.settings.model);
+  await studio.saveImageJob({ jobId: imageId, settings: { model: "" } });
+  imageJob = await studio.getImageJob({ jobId: imageId });
+  check("写空串即「不钉模型」，回落到用途绑定 / 渠道第一个", imageJob.settings.model === "", imageJob.settings.model);
 
   // 上传一张已有图片直接做抠像——这是「支持绿幕抠图生成 png」的主路径
   await studio.addImageItem({ jobId: imageId, name: "green.png", data: greenPng.toString("base64") });
@@ -1377,26 +1436,25 @@ async function main() {
   check("首帧图已记录", seqJob.refs.firstFrame?.file !== undefined, seqJob.refs.firstFrame?.file ?? "");
   check("模式与参数已保存", seqJob.mode === "frames" && seqJob.settings.frameCount === 4, `${seqJob.mode} ${seqJob.settings.frameCount}`);
 
-  // 视频模型同样是全局设置：任务里不允许留一份会打错网关的旧模型副本
-  // （实测过的坑：任务存官方 H3 + 全局切优云智算 → cp.compshare.cn/v2/... 404）。
+  // 任务级模型不再是「会打错网关的旧副本」：解析时会**按模型反查渠道**，
+  // 同一个模型 id 落在哪条渠道，就归那条渠道的地址与协议（方案 §2.1）。
   await studio.saveSequenceJob({ jobId: seqId, settings: { model: "MiniMax-H3", resolution: "480P" } });
   seqJob = await studio.getSequenceJob({ jobId: seqId });
-  check(
-    "序列帧任务的模型跟随全局设置",
-    seqJob.settings.model === (await studio.getConfig()).minimaxModel,
-    `${seqJob.settings.model} vs ${(await studio.getConfig()).minimaxModel}`
-  );
+  check("序列帧任务能写下自己的模型", seqJob.settings.model === "MiniMax-H3", seqJob.settings.model);
   check("序列帧分辨率跟着当前模型收敛", seqJob.settings.resolution === "2K", seqJob.settings.resolution);
 
-  // 切到优云智算版后，同一个任务再保存就应换成优云智算的模型与档位。
+  // 任务写下的模型优先于全局；档位仍按**写下的那个模型**收敛。
   await studio.saveConfig({ minimaxModel: compshareId });
-  await studio.saveSequenceJob({ jobId: seqId, settings: { model: "MiniMax-H3", duration: 20, resolution: "1080P" } });
+  await studio.saveSequenceJob({ jobId: seqId, settings: { model: compshareId, duration: 20, resolution: "1080P" } });
   const cpSeqJob = await studio.getSequenceJob({ jobId: seqId });
   check(
-    "切到优云智算后任务跟着换模型与档位",
+    "任务写下的模型不被全局覆盖，档位按它收敛",
     cpSeqJob.settings.model === compshareId && cpSeqJob.settings.duration === 20 && cpSeqJob.settings.resolution === "1080P",
     JSON.stringify(cpSeqJob.settings)
   );
+  await studio.saveSequenceJob({ jobId: seqId, settings: { model: "" } });
+  const unpinned = await studio.getSequenceJob({ jobId: seqId });
+  check("任务清掉模型后不再钉住任何模型", unpinned.settings.model === "", unpinned.settings.model);
   await studio.saveConfig({ minimaxModel: "MiniMax-H3", minimaxBaseUrl: "https://api.minimaxi.com" });
 
   // 参考模式必须至少有一张参考图/一段参考视频

@@ -51,6 +51,36 @@ export type { ImagePurpose };
 const NO_OPTIONS: Record<string, unknown> = {};
 
 /**
+ * 模型反查渠道（§2.1）。
+ *
+ * 同一个模型 id 落在**哪条渠道**，就归那条渠道的地址与协议。没有这一步，
+ * 「任务里钉住的模型」会被打到另一条渠道的网关上——这就是历史上那个
+ * 「任务存官方 H3 + 全局切优云智算 → cp.compshare.cn/v2/... 404」。
+ *
+ * 优先级：
+ *   ① 绑定供应商自己的渠道里就有 → 用它（同 id 出现在多条渠道时，绑定即用户的意图）；
+ *   ② 否则找第一条含它的渠道，并挑一个有密钥的供应商——否则解析出来是空 key。
+ */
+function channelHostingModel(
+  config: Config,
+  model: string,
+  preferSupplierId: string
+): { supplierId: string; channelId: string } | undefined {
+  const preferred = preferSupplierId === "" ? undefined : config.suppliers[preferSupplierId];
+  if (preferred !== undefined && config.channels[preferred.channelId]?.models.some((entry) => entry.id === model)) {
+    return { supplierId: preferSupplierId, channelId: preferred.channelId };
+  }
+  for (const [channelId, channel] of Object.entries(config.channels)) {
+    if (!channel.models.some((entry) => entry.id === model)) continue;
+    const holder = Object.keys(config.suppliers).find(
+      (id) => config.suppliers[id]!.channelId === channelId && (config.channelSecrets[id] ?? "").trim() !== ""
+    );
+    if (holder !== undefined) return { supplierId: holder, channelId };
+  }
+  return undefined;
+}
+
+/**
  * 从渠道层解析一次调用。
  *
  * 顺序是 **模型 → 渠道 → 供应商**（见 docs/渠道层与设置页改造方案.md §2.1）：
@@ -66,10 +96,14 @@ function resolveTarget(
   flat: { protocol: string; baseUrl: string; apiKey: string; model: string; timeoutMs: number; options: Record<string, unknown> }
 ): ResolvedTarget {
   const supplierId = (override?.supplierId ?? slot?.supplierId ?? "").trim();
-  const supplier = supplierId === "" ? undefined : config.suppliers[supplierId];
-  const channel = supplier === undefined ? undefined : config.channels[supplier.channelId];
+  const wanted = (override?.model ?? slot?.model ?? "").trim();
+  // 模型反查渠道：指定了模型就以它落在哪条渠道为准。
+  const hosted = wanted === "" ? undefined : channelHostingModel(config, wanted, supplierId);
+  const actualSupplierId = hosted?.supplierId ?? supplierId;
+  const supplier = actualSupplierId === "" ? undefined : config.suppliers[actualSupplierId];
+  const channel =
+    hosted !== undefined ? config.channels[hosted.channelId] : supplier === undefined ? undefined : config.channels[supplier.channelId];
   if (supplier !== undefined && channel !== undefined && channel.models.length > 0) {
-    const wanted = (override?.model ?? slot?.model ?? "").trim();
     // 指定了模型就用指定的那一个（不在这里校验它是否在该渠道清单里——那是界面的活）；
     // 没指定才回落到渠道的第一个。这样「任务快照里的模型」不会被静默换掉。
     const model = wanted !== "" ? wanted : channel.models[0]!.id;
@@ -77,11 +111,11 @@ function resolveTarget(
     const { timeoutMs: channelTimeout, ...instanceOptions } = channel.options ?? NO_OPTIONS;
     return {
       protocol: channel.protocol,
-      supplierId,
-      channelId: supplier.channelId,
+      supplierId: actualSupplierId,
+      channelId: hosted?.channelId ?? supplier.channelId,
       context: {
         baseUrl: channel.baseUrl,
-        apiKey: config.channelSecrets[supplierId] ?? "",
+        apiKey: config.channelSecrets[actualSupplierId] ?? "",
         model,
         timeoutMs:
           typeof channelTimeout === "number" && Number.isFinite(channelTimeout) ? channelTimeout : flat.timeoutMs,
@@ -320,6 +354,23 @@ export function modelLabelOf(protocol: string, model: string): string | undefine
   const instances = [...listImageInstances(), ...listVideoInstances()];
   const hit = instances.find((instance) => instance.id === protocol);
   return hit?.modelCatalog().find((entry) => entry.id === model)?.label;
+}
+
+/** 某个协议下某个模型的能力。界面据此决定「渲染哪些控件」——不支持就不渲染。 */
+export function modelCapabilityOf(protocol: string, model: string): CapabilityDescriptor | undefined {
+  const instances = [...listImageInstances(), ...listVideoInstances()];
+  return instances.find((instance) => instance.id === protocol)?.capabilityOf(model);
+}
+
+/**
+ * 四级回落的前两级：**本次执行 → 任务 / 项目设置**。
+ *
+ * 后两级（用途绑定 → 渠道第一个模型）由 `resolveTarget` 负责。这里只把前两级
+ * 合成一个值，传下去当 `model` 覆盖项——所以调用方不必自己写 `a || b || c`。
+ */
+export function pickModel(callModel?: string, taskModel?: string): string | undefined {
+  const wanted = (callModel ?? "").trim() || (taskModel ?? "").trim();
+  return wanted === "" ? undefined : wanted;
 }
 
 /** 生图模型目录。 */

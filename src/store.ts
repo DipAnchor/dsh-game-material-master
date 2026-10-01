@@ -69,6 +69,11 @@ export interface VideoNode {
   file?: string;
   approved: boolean;
   error?: string;
+  /**
+   * 提交这一段时用的模型。**必须落盘**：轮询要按同一个模型重建上下文
+   * （模型决定网关与协议路径），否则就成了历史上那个「官方 H3 + 优云智算网关 → 404」。
+   */
+  model?: string;
   elapsedMs?: number;
   updatedAt?: number;
 }
@@ -169,6 +174,8 @@ export interface TurnVideoNode {
    * 记下来才知道「模型到底看到的是哪张」——排查「第一帧就不是正面」时全靠它。
    */
   firstFrame?: string;
+  /** 提交这一段时用的模型（同 `VideoNode.model`：轮询要按它重建上下文）。 */
+  model?: string;
   elapsedMs?: number;
   updatedAt?: number;
 }

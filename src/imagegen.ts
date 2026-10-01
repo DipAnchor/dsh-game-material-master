@@ -17,7 +17,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { imageJobsRoot, loadConfig } from "./config.js";
-import { imageEngine, resolveImageTarget } from "./engine/index.js";
+import { imageEngine, pickModel, resolveImageTarget } from "./engine/index.js";
 import { decodeToRgba, mimeOf, toDataUri } from "./media.js";
 import { keyGreen } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -268,18 +268,18 @@ export function buildPrompt(job: ImageJob): string {
 }
 
 /** 生成一张图（内部一次调用）。 */
-export async function generateImageItem(jobId: string, index: number): Promise<void> {
+export async function generateImageItem(jobId: string, index: number, modelOverride?: string): Promise<void> {
   const job = await readImageJob(jobId);
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
   const config = await loadConfig();
   const prompt = buildPrompt(job);
   if (prompt === "") throw new Error("提示词为空，请先填写");
 
-  // 渠道层解析：模型 → 渠道 → 供应商。U1 期间渠道与扁平字段互为投影，
-  // 所以解析出来的模型与 key 和改造前逐字一致（任务级模型到 U3 才开放）。
-  const target = resolveImageTarget(config, "default");
+  // 四级回落：本次执行 → 任务设置 → bind.image.default.model → 渠道第一个模型。
+  // 不再回写 job.settings.model——那是「只剩一个全局槽位」时代的产物，
+  // 会让「这次换 4.5 试一张」顺手改掉任务默认值。
+  const target = resolveImageTarget(config, "default", { model: pickModel(modelOverride, job.settings.model) });
   if (target.context.apiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
-  job.settings.model = target.context.model;
 
   const item: ImageItem = job.items[index] ?? { index, status: "empty", source: "generated" };
   job.items[index] = { ...item, status: "running", error: undefined };

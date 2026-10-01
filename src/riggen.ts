@@ -26,7 +26,7 @@
  */
 
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { resolveImageTarget } from "./engine/index.js";
+import { pickModel, resolveImageTarget } from "./engine/index.js";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, rigJobsRoot } from "./config.js";
@@ -1895,7 +1895,7 @@ export async function redrawRigPart(
   jobId: string,
   name: string,
   prompt: string,
-  options: { erode?: number; note?: string } = {}
+  options: { erode?: number; note?: string; model?: string } = {}
 ): Promise<{ name: string; version: number; width: number; height: number }> {
   const job = await readRigJob(jobId);
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
@@ -1906,7 +1906,7 @@ export async function redrawRigPart(
 
   const config = await loadConfig();
   // 「部件重绘」走 redraw 用途的绑定：模型可由 `bind.image.redraw.model` 单指。
-  const target = resolveImageTarget(config, "redraw");
+  const target = resolveImageTarget(config, "redraw", { model: pickModel(options.model, job.settings.model) });
   if (target.context.apiKey.trim() === "")
     throw new Error("尚未配置火山方舟 API Key，无法重绘（可以在界面里手工换色或上传替换，都不花钱）");
 
@@ -1972,7 +1972,7 @@ export function startRigRedraw(
   jobId: string,
   name: string,
   prompt: string,
-  options: { erode?: number } = {}
+  options: { erode?: number; model?: string } = {}
 ): { started: boolean; reason?: string } {
   try {
     assertIdle(jobId, REDRAW_TASK_KEY, "部件重绘");
@@ -2907,27 +2907,26 @@ export async function setRigSemantics(
 /**
  * 用生图模型生成「拆件摊平图」。**这一步是唯一花钱的阶段**：一次 Seedream 调用。
  */
-export function startSheetGeneration(jobId: string): { started: boolean; reason?: string } {
+export function startSheetGeneration(jobId: string, options: { model?: string } = {}): { started: boolean; reason?: string } {
   try {
     assertIdle(jobId, "sheet", "拆件生图");
   } catch (error) {
     return { started: false, reason: messageOf(error) };
   }
-  const started = kick(jobId, "sheet", () => generateSheet(jobId));
+  const started = kick(jobId, "sheet", () => generateSheet(jobId, options.model));
   return started ? { started: true } : { started: false, reason: "拆件生图已在进行中" };
 }
 
-export async function generateSheet(jobId: string): Promise<void> {
+export async function generateSheet(jobId: string, modelOverride?: string): Promise<void> {
   const job = await readRigJob(jobId);
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
   const config = await loadConfig();
   // 「拆件摊平图」走 sheet 用途的绑定。
-  const target = resolveImageTarget(config, "sheet");
+  const target = resolveImageTarget(config, "sheet", { model: pickModel(modelOverride, job.settings.model) });
   if (target.context.apiKey.trim() === "") throw new Error("尚未配置火山方舟 API Key");
   if (job.source === undefined) throw new Error("还没有角色参考图，请先上传一张整图");
 
   const prompt = buildSheetRequest(job);
-  job.settings.model = target.context.model;
   job.sheet = { ...job.sheet, status: "running", error: undefined };
   appendJobLog(job.log, "info", `开始拆件生图（模型 ${target.context.model}）`);
   await writeRigJob(job);

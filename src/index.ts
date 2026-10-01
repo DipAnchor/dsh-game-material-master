@@ -21,8 +21,10 @@ import {
   imageEngine,
   imageModelCatalog,
   listProtocols,
+  modelCapabilityOf,
   modelLabelOf,
   normalizeVideoParams,
+  pickModel,
   probeProtocolModels,
   protocolDefaultBaseUrl,
   resolveImageTarget,
@@ -218,6 +220,26 @@ export class GameStudioGateway extends TypertRemoteService {
    * `channels` / `suppliers` / `bind` 在 `maskConfig` 里被**整组剔除**（否则 `channelSecrets`
    * 会跟着 `...rest` 漏给浏览器），这里重新装配成界面要的形状：协议标签、密钥状态、用途绑定。
    */
+  /**
+   * 一条用途绑定解析后的去处（协议 / 供应商 / 渠道 / 模型 / 地址 / 有无密钥）。
+   *
+   * 只用于展示与验收，不参与任何生成——真正的解析在 `engine/index.ts` 的
+   * `resolveTarget` 里，这里只是把它跑一遍给人看。
+   */
+  resolvedSlot(config: Config, capability: string, purpose: string) {
+    const target =
+      capability === "image"
+        ? resolveImageTarget(config, purpose as "default" | "sheet" | "redraw")
+        : resolveVideoTarget(config);
+    return {
+      protocol: target.protocol,
+      supplierId: target.supplierId,
+      channelId: target.channelId,
+      model: target.context.model,
+      baseUrl: target.context.baseUrl,
+      keySet: target.context.apiKey.trim() !== ""
+    };
+  }
   channelViewOf(config: Config) {
     const protocols = listProtocols();
     return {
@@ -230,7 +252,9 @@ export class GameStudioGateway extends TypertRemoteService {
         options: channel.options ?? {},
         models: channel.models.map((model) => ({
           id: model.id,
-          label: model.label ?? modelLabelOf(channel.protocol, model.id) ?? model.id
+          label: model.label ?? modelLabelOf(channel.protocol, model.id) ?? model.id,
+          // 界面据此决定渲染哪些控件：协议不支持就不渲染，不留「填了但没用」的输入框。
+          capability: modelCapabilityOf(channel.protocol, model.id) ?? null
         }))
       })),
       suppliers: Object.entries(config.suppliers).map(([id, supplier]) => {
@@ -250,6 +274,16 @@ export class GameStudioGateway extends TypertRemoteService {
           redraw: { ...config.bind.image.redraw }
         },
         video: { default: { ...config.bind.video.default } }
+      },
+      // 每条用途绑定**解析后**实际会走到哪：界面靠它显示「现在用的是哪条渠道的哪个模型」，
+      // 也免得用户对着 bind 里的空 model 猜；验收脚本靠它断言四级回落与模型反查渠道。
+      resolved: {
+        image: {
+          default: this.resolvedSlot(config, "image", "default"),
+          sheet: this.resolvedSlot(config, "image", "sheet"),
+          redraw: this.resolvedSlot(config, "image", "redraw")
+        },
+        video: { default: this.resolvedSlot(config, "video", "default") }
       },
       protocols: protocols.map((entry) => ({ ...entry }))
     };
@@ -809,12 +843,13 @@ export class GameStudioGateway extends TypertRemoteService {
     if (directionOf(key) === undefined)
       throw new Error(`未知方向：${key}`);
     return startImage(projectId, key, {
-      prompt: typeof input.prompt === "string" ? input.prompt : undefined
+      prompt: typeof input.prompt === "string" ? input.prompt : undefined,
+      model: asString(input.model, "")
     });
   }
   async runImages(payload) {
     const input = asRecord(payload);
-    return startAllImages(asString(input.projectId), input.force === true);
+    return startAllImages(asString(input.projectId), input.force === true, { model: asString(input.model, "") });
   }
   async runVideos(payload) {
     const input = asRecord(payload);
@@ -863,7 +898,7 @@ export class GameStudioGateway extends TypertRemoteService {
     if (submittable.length === 0) {
       throw new Error("这些方向的视频都已经生成完成；要重做请点该方向的「重新生成」");
     }
-    return startVideos(projectId, submittable);
+    return startVideos(projectId, submittable, { model: asString(input.model, "") });
   }
   async pollVideos(payload) {
     const projectId = asString(asRecord(payload).projectId);
@@ -959,7 +994,7 @@ export class GameStudioGateway extends TypertRemoteService {
     const running = project.turn?.video?.status === "running";
     if (running)
       throw new Error("转圈视频正在生成中，请等它跑完（重复提交会覆盖正在跑的任务）");
-    return startTurnVideo(projectId);
+    return startTurnVideo(projectId, { model: asString(asRecord(payload).model, "") });
   }
   /** 抽取转圈候选帧（本机 ffmpeg，不花钱），并按当前截帧位置切出八张方向图。 */
   async runTurnFrames(payload) {
@@ -1066,8 +1101,9 @@ export class GameStudioGateway extends TypertRemoteService {
     if (typeof input.suffix === "string") job.suffix = input.suffix;
     if (input.settings !== undefined) {
       const raw = asRecord(input.settings);
-      // 生图模型是全局设置（设置 → 游戏素材大师 → 生图模型），任务里不保留可覆盖的副本。
-      job.settings.model = (await loadConfig()).arkModel;
+      // 任务级默认模型（四级回落的第二级）。留空即跟随 bind.image.default.model
+      // 或渠道第一个模型——不再由宿主从全局配置单向覆盖。
+      if (typeof raw.model === "string") job.settings.model = raw.model.trim();
       job.settings.size = asString(raw.size, job.settings.size);
       job.settings.count = clampInt(raw.count, job.settings.count, 1, 8);
       job.settings.watermark = raw.watermark === true;
@@ -1126,7 +1162,7 @@ export class GameStudioGateway extends TypertRemoteService {
     }
     let started = 0;
     for (let i = 0; i < count; i++) {
-      if (kickImageItem(jobId, i)) started++;
+      if (kickImageItem(jobId, i, asString(input.model, ""))) started++;
     }
     if (started === 0) throw new Error("这些图片已经在生成中，请等它们跑完");
     return { started: true, count: started };
@@ -1173,10 +1209,10 @@ export class GameStudioGateway extends TypertRemoteService {
     if (input.settings !== undefined) {
       const raw = asRecord(input.settings);
       const before = { ...job.settings };
-      // 视频模型是全局设置（含优云智算版），任务里不保留可覆盖的副本；
-      // 时长/分辨率也跟着当前模型收敛，避免存下当前模型不支持的档位。
-      const model = (await loadConfig()).minimaxModel;
-      job.settings.model = model;
+      // 任务级默认模型（四级回落的第二级）；留空即跟随 bind.video.default.model
+      // 或渠道第一个模型。时长/分辨率按**这个模型**收敛，避免存下它不支持的档位。
+      if (typeof raw.model === "string") job.settings.model = raw.model.trim();
+      const model = resolveVideoTarget(await loadConfig(), { model: job.settings.model }).context.model;
       const params = normalizeVideoParams(model, {
         duration: clampInt(raw.duration, job.settings.duration, 1, 30),
         resolution: asString(raw.resolution, job.settings.resolution)
@@ -1250,7 +1286,7 @@ export class GameStudioGateway extends TypertRemoteService {
     if (job.frames.raw !== undefined && job.video.status === "empty") {
       throw new Error("清空视频后才能重新生成");
     }
-    return seqgen.startSequenceVideo(jobId);
+    return seqgen.startSequenceVideo(jobId, { model: asString(asRecord(payload).model, "") });
   }
 
   async pollSequenceVideo(payload) {
@@ -1429,7 +1465,9 @@ export class GameStudioGateway extends TypertRemoteService {
   }
 
   async runRigSheet(payload) {
-    return riggen.startSheetGeneration(asString(asRecord(payload).jobId));
+    return riggen.startSheetGeneration(asString(asRecord(payload).jobId), {
+      model: asString(asRecord(payload).model, "")
+    });
   }
 
   /**
@@ -1682,7 +1720,8 @@ export class GameStudioGateway extends TypertRemoteService {
   async runRigRedraw(payload) {
     const input = asRecord(payload);
     return riggen.startRigRedraw(asString(input.jobId), asString(input.name), asString(input.prompt), {
-      erode: typeof input.erode === "number" ? input.erode : undefined
+      erode: typeof input.erode === "number" ? input.erode : undefined,
+      model: asString(input.model, "")
     });
   }
 
@@ -1777,8 +1816,8 @@ function trackImageTask(jobId: string, key: string, run: () => Promise<unknown>)
   return true;
 }
 
-function kickImageItem(jobId: string, index: number): boolean {
-  return trackImageTask(jobId, `image:${index}`, () => imagegen.generateImageItem(jobId, index));
+function kickImageItem(jobId: string, index: number, model?: string): boolean {
+  return trackImageTask(jobId, `image:${index}`, () => imagegen.generateImageItem(jobId, index, model));
 }
 
 function kickImageKey(jobId: string): boolean {

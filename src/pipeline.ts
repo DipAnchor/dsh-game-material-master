@@ -153,6 +153,14 @@ function dropJobTarget(projectId: string, taskKey: string, key: string): void {
 
 export interface StartImageOptions {
   prompt?: string;
+  /**
+   * 本次执行用的模型。
+   *
+   * 四级回落（§4.5）：本次执行 → 任务/项目设置 → `bind.image.default.model` → 渠道第一个模型。
+   * 八方向图的项目**不保留**模型副本（原来那条「任务里不保留可覆盖的副本」的理由已经不成立，
+   * 但也没必要引入新字段），所以这里就是它唯一的一级。
+   */
+  model?: string;
 }
 
 export function startImage(projectId: string, key: string, options: StartImageOptions = {}): { started: boolean; reason?: string } {
@@ -160,11 +168,18 @@ export function startImage(projectId: string, key: string, options: StartImageOp
   if (direction === undefined) return { started: false, reason: `未知方向：${key}` };
   if (jobs.get(projectId)?.has(`image:${key}`) === true) return { started: false, reason: "该方向正在生成中" };
 
-  const started = kick(projectId, `image:${key}`, `生成「${direction.label}」`, () => generateOne(projectId, key, options.prompt));
+  const started = kick(projectId, `image:${key}`, `生成「${direction.label}」`, () =>
+    generateOne(projectId, key, options.prompt, options.model)
+  );
   return started ? { started: true } : { started: false, reason: "任务已在进行中" };
 }
 
-async function generateOne(projectId: string, key: string, promptOverride?: string): Promise<void> {
+async function generateOne(
+  projectId: string,
+  key: string,
+  promptOverride?: string,
+  modelOverride?: string
+): Promise<void> {
   const direction = directionOf(key);
   if (direction === undefined) throw new Error(`未知方向：${key}`);
 
@@ -187,15 +202,19 @@ async function generateOne(projectId: string, key: string, promptOverride?: stri
     throw new Error(`参考图还没准备好：${missing.map((k) => directionOf(k)?.label ?? k).join("、")}`);
   }
 
+  // 先解析、再进 try：失败时节点上也留下「这次用的是哪个模型」——
+  // 排查「是不是被送到了错的那条渠道」全靠它。
+  const target = resolveImageTarget(config, "default", { model: modelOverride });
+
   await patchProject(projectId, (current) => {
-    current.images[key] = { ...current.images[key], status: "running", error: undefined };
+    current.images[key] = { ...current.images[key], status: "running", error: undefined, model: target.context.model };
     log(current, "info", `开始生成「${direction.label}」`);
   });
 
   const startedAt = Date.now();
   try {
     const images = await Promise.all(refs.map((file) => toDataUri(file, mimeOf(file))));
-    const result = await imageEngine(resolveImageTarget(config)).generate({ prompt, images });
+    const result = await imageEngine(target).generate({ prompt, images });
 
     const relative = `images/${key}.${result.ext}`;
     await mkdir(dirname(assetPath(projectId, relative)), { recursive: true });
@@ -209,7 +228,7 @@ async function generateOne(projectId: string, key: string, promptOverride?: stri
         file: relative,
         approved: false,
         stale: false,
-        model: config.arkModel,
+        model: target.context.model,
         elapsedMs: elapsed,
         updatedAt: Date.now()
       };
@@ -238,7 +257,11 @@ function markDependentsStale(project: Project, changed: string): void {
 }
 
 /** 按依赖顺序把八张图全部生成一遍（用户已手工通过的图会被跳过）。 */
-export function startAllImages(projectId: string, force = false): { started: boolean; reason?: string } {
+export function startAllImages(
+  projectId: string,
+  force = false,
+  options: { model?: string } = {}
+): { started: boolean; reason?: string } {
   const started = kick(projectId, "images:all", "批量生成八方向图", async () => {
     // 一开工先把八个方向都盖住（与「刚点下去」时本地 pending 表的表现一致），
     // 等这一批到底要重做哪些方向算出来再收窄——生图要跑好几分钟，
@@ -264,7 +287,7 @@ export function startAllImages(projectId: string, force = false): { started: boo
       // 出图落地后逐个摘掉：成功是露出新图，失败是露出错误。
       await mapLimit(todo, config.concurrency, async (key) => {
         try {
-          await generateOne(projectId, key, undefined);
+          await generateOne(projectId, key, undefined, options.model);
         } catch {
           // generateOne 已经把错误写进节点状态，这里继续推进其余方向。
         } finally {
@@ -301,17 +324,17 @@ function turnFirstFrame(project: Project): { file: string; label: string } | und
   return undefined;
 }
 
-export function startTurnVideo(projectId: string): { started: boolean; reason?: string } {
+export function startTurnVideo(projectId: string, options: { model?: string } = {}): { started: boolean; reason?: string } {
   if (jobs.get(projectId)?.has("turn:video") === true) return { started: false, reason: "转圈视频正在生成中" };
-  const started = kick(projectId, "turn:video", "生成转圈视频", () => submitTurnVideo(projectId));
+  const started = kick(projectId, "turn:video", "生成转圈视频", () => submitTurnVideo(projectId, options.model));
   return started ? { started: true } : { started: false, reason: "任务已在进行中" };
 }
 
-async function submitTurnVideo(projectId: string): Promise<void> {
+async function submitTurnVideo(projectId: string, modelOverride?: string): Promise<void> {
   const project = await readProject(projectId);
   if (project === undefined) throw new Error(`项目不存在：${projectId}`);
   const config = await loadConfig();
-  const target = resolveVideoTarget(config);
+  const target = resolveVideoTarget(config, { model: modelOverride });
   if (target.context.apiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
 
   const first = turnFirstFrame(project);
@@ -351,6 +374,7 @@ async function submitTurnVideo(projectId: string): Promise<void> {
         status: "running",
         taskId,
         remoteStatus: "已提交",
+        model: target.context.model,
         elapsedMs: Date.now() - startedAt,
         updatedAt: Date.now()
       };
@@ -374,7 +398,7 @@ async function pollTurnVideoOnce(projectId: string, config: Config): Promise<voi
   const taskId = project.turn?.video?.taskId;
   if (project.turn?.video?.status !== "running" || taskId === undefined) return;
 
-  const video = videoEngine(resolveVideoTarget(config));
+  const video = videoEngine(resolveVideoTarget(config, { model: project.turn?.video?.model }));
   try {
     const query = await video.query(taskId);
     if (query.status === "failed") {
@@ -675,7 +699,11 @@ export async function setImageMode(projectId: string, mode: "turn" | "direct"): 
 
 // ── 阶段 2：八段视频 ──────────────────────────────────────────────────────
 
-export function startVideos(projectId: string, keys?: string[]): { started: boolean; reason?: string } {
+export function startVideos(
+  projectId: string,
+  keys?: string[],
+  options: { model?: string } = {}
+): { started: boolean; reason?: string } {
   const started = kick(projectId, "videos:submit", "提交视频任务", async () => {
     // 第一个 await 之前就把覆盖面公布出去：远程调用返回时界面已经能靠它
     // 盖住「还没轮到」的方向，不必等本地 pending 表那 700ms 的缓冲。
@@ -683,7 +711,7 @@ export function startVideos(projectId: string, keys?: string[]): { started: bool
     const project = await readProject(projectId);
     if (project === undefined) throw new Error(`项目不存在：${projectId}`);
     const config = await loadConfig();
-    const target = resolveVideoTarget(config);
+    const target = resolveVideoTarget(config, { model: options.model });
     if (target.context.apiKey.trim() === "") throw new Error("尚未配置 MiniMax API Key");
 
     const targets = (keys ?? DIRECTION_KEYS).filter((key) => {
@@ -734,6 +762,7 @@ export function startVideos(projectId: string, keys?: string[]): { started: bool
             status: "running",
             taskId,
             remoteStatus: "已提交",
+            model: target.context.model,
             updatedAt: Date.now()
           };
           log(current, "info", `「${label}」视频任务已提交（${taskId}）`);
@@ -793,9 +822,10 @@ export async function pollVideosOnce(projectId: string): Promise<void> {
     return;
   }
 
-  const video = videoEngine(resolveVideoTarget(config));
   await Promise.all(
     pending.map(async (key) => {
+      // 每个方向按**它自己提交时用的模型**重建上下文：轮询要打到同一个网关。
+      const video = videoEngine(resolveVideoTarget(config, { model: project.videos[key]?.model }));
       const label = directionOf(key)?.label ?? key;
       const taskId = project.videos[key].taskId as string;
       try {
