@@ -22,8 +22,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, sequenceJobsRoot } from "./config.js";
-import { normalizeDuration, normalizeResolution } from "./minimax.js";
-import { videoEngine } from "./engine/index.js";
+import { normalizeVideoParams, videoEngine } from "./engine/index.js";
 import { extractFrames, fileSize, mimeOf, toJpegDataUri } from "./media.js";
 import { composeSheet, keyGreen, type SheetRow } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -421,8 +420,12 @@ async function submitSequenceVideo(jobId: string): Promise<void> {
   // 就会打出 cp.compshare.cn/v2/... 这种 404。这里以全局配置为准并回写任务。
   const model = config.minimaxModel;
   job.settings.model = model;
-  job.settings.duration = normalizeDuration(model, job.settings.duration);
-  job.settings.resolution = normalizeResolution(model, job.settings.resolution);
+  const params = normalizeVideoParams(model, {
+    duration: job.settings.duration,
+    resolution: job.settings.resolution
+  });
+  job.settings.duration = params.duration;
+  job.settings.resolution = params.resolution;
 
   const built = buildSequencePrompt(job);
   if ("error" in built) throw new Error(built.error);

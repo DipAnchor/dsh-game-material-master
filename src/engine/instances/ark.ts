@@ -7,10 +7,21 @@
  */
 
 import { generateImage, testArk, type ArkResult } from "../../ark.js";
-import type { CapabilityDescriptor, ImageInstance, ImageResult, InstanceContext } from "../types.js";
+import type { CapabilityDescriptor, CatalogEntry, ImageInstance, ImageResult, InstanceContext } from "../types.js";
 
 /** ark.ts 明确接受的尺寸档位；也接受显式 `宽x高`。 */
 const ARK_SIZES = ["1K", "2K", "4K"];
+
+/**
+ * 可选模型目录。原先放在 config.ts，现在归实例所有——「这家厂商有哪些模型」
+ * 是实例的知识，不是全局配置的一部分。
+ */
+const ARK_MODEL_PRESETS: readonly CatalogEntry[] = [
+  { id: "doubao-seedream-4-0-250828", label: "Seedream 4.0（通用、支持图组）" },
+  { id: "doubao-seedream-4-5-251128", label: "Seedream 4.5" },
+  { id: "doubao-seedream-5-0-260128", label: "Seedream 5.0 Lite（支持 PNG 输出）" },
+  { id: "doubao-seedream-5-0-pro-260628", label: "Seedream 5.0 Pro（单图质量最好）" }
+];
 
 const CAPABILITY: CapabilityDescriptor = {
   sizes: ARK_SIZES,
@@ -25,6 +36,8 @@ export const arkImageInstance: ImageInstance = {
   label: "火山方舟 Seedream",
 
   capabilityOf: () => CAPABILITY,
+
+  modelCatalog: () => ARK_MODEL_PRESETS,
 
   async generate(ctx: InstanceContext, req, signal): Promise<ImageResult> {
     // 模型可以在请求里单指（部件重绘就靠这个换模型）；否则用渠道默认。

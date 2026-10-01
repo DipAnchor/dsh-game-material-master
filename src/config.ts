@@ -31,7 +31,7 @@ export function isLegacyRowOrder(order: unknown): boolean {
     order.every((key, index) => key === LEGACY_ROW_ORDER[index])
   );
 }
-import { COMP_SHARE_MODEL_ID, normalizeDuration, normalizeResolution, rootOf } from "./minimax.js";
+import { normalizeVideoBaseUrl, normalizeVideoParams } from "./engine/index.js";
 
 export function dshHome(): string {
   const raw = process.env.DSH_HOME?.trim();
@@ -219,32 +219,6 @@ export const DEFAULT_CONFIG: Config = {
   concurrency: 3
 };
 
-export const ARK_MODEL_PRESETS = [
-  { id: "doubao-seedream-4-0-250828", label: "Seedream 4.0（通用、支持图组）" },
-  { id: "doubao-seedream-4-5-251128", label: "Seedream 4.5" },
-  { id: "doubao-seedream-5-0-260128", label: "Seedream 5.0 Lite（支持 PNG 输出）" },
-  { id: "doubao-seedream-5-0-pro-260628", label: "Seedream 5.0 Pro（单图质量最好）" }
-];
-
-export const MINIMAX_HOST_PRESETS = [
-  { id: "https://api.minimaxi.com", label: "国际站 api.minimaxi.com" },
-  { id: "https://api.minimax.cn", label: "国内站 api.minimax.cn" }
-];
-
-/**
- * 视频模型下拉。优云智算版 H3 与官方 H3 是同一个模型，只是走第三方网关，
- * 所以做成一个独立的可选项——由用户显式选择，而不是从 Base URL / Key 前缀去猜。
- */
-export const MINIMAX_MODEL_PRESETS = [
-  { id: "MiniMax-H3", label: "MiniMax-H3（v2 · 768P/2K · 4~15 秒，推荐）" },
-  { id: COMP_SHARE_MODEL_ID, label: "优云智算网关 · 768P/1080P/2K · 4~30 秒" },
-  { id: "MiniMax-H3-Max", label: "MiniMax-H3-Max（v2 极速 · 480P/768P · 5~15 秒）" },
-  { id: "MiniMax-Hailuo-02", label: "MiniMax-Hailuo-02（v1 · 6/10 秒）" },
-  { id: "I2V-01-Director", label: "I2V-01-Director（v1 · 支持运镜指令）" },
-  { id: "I2V-01", label: "I2V-01（v1）" },
-  { id: "I2V-01-live", label: "I2V-01-live（v1）" }
-];
-
 function asInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(n)) return fallback;
@@ -280,9 +254,12 @@ export function normalizeConfig(input: unknown): Config {
   // 视频参数都跟着模型走：换到 H3 之后旧的 `1080P` / `6 秒` 未必合法；
   // 选「优云智算版 H3」时档位放宽到 1080P、4~30 秒。
   const minimaxModel = asString(raw.minimaxModel, DEFAULT_CONFIG.minimaxModel);
-  const minimaxBaseUrl = rootOf(asString(raw.minimaxBaseUrl, DEFAULT_CONFIG.minimaxBaseUrl)) || DEFAULT_CONFIG.minimaxBaseUrl;
-  const minimaxDuration = normalizeDuration(minimaxModel, raw.minimaxDuration ?? DEFAULT_CONFIG.minimaxDuration);
-  const minimaxResolution = normalizeResolution(minimaxModel, raw.minimaxResolution ?? DEFAULT_CONFIG.minimaxResolution);
+  const minimaxBaseUrl = normalizeVideoBaseUrl(asString(raw.minimaxBaseUrl, DEFAULT_CONFIG.minimaxBaseUrl)) || DEFAULT_CONFIG.minimaxBaseUrl;
+  // 时长 / 分辨率按模型收敛一次再落盘：换过模型之后，旧档位可能已经不合法了。
+  const minimaxParams = normalizeVideoParams(minimaxModel, {
+    duration: raw.minimaxDuration ?? DEFAULT_CONFIG.minimaxDuration,
+    resolution: raw.minimaxResolution ?? DEFAULT_CONFIG.minimaxResolution
+  });
 
   return {
     arkApiKey: asString(raw.arkApiKey, DEFAULT_CONFIG.arkApiKey),
@@ -296,8 +273,8 @@ export function normalizeConfig(input: unknown): Config {
     minimaxApiKey: asString(raw.minimaxApiKey, DEFAULT_CONFIG.minimaxApiKey),
     minimaxBaseUrl,
     minimaxModel,
-    minimaxDuration,
-    minimaxResolution,
+    minimaxDuration: minimaxParams.duration,
+    minimaxResolution: minimaxParams.resolution,
     minimaxPromptOptimizer: asBool(raw.minimaxPromptOptimizer, DEFAULT_CONFIG.minimaxPromptOptimizer),
     minimaxTimeoutMs: asInt(raw.minimaxTimeoutMs, DEFAULT_CONFIG.minimaxTimeoutMs, 10000, 900000),
 
