@@ -1032,6 +1032,8 @@ section("设置页：渠道 / 供应商 / 用途绑定");
       .map((node) => textOf(node))
       .join(" | ");
 
+  // 三处生图用途都解析到同一条上游。
+  const TARGET = { protocol: "ark", supplierId: "ark-main", channelId: "ark-cn", model: "doubao-seedream-4-0-250828", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", keySet: true };
   const fakeConfig = {
     ffmpeg: { ok: true, version: "6.0" },
     dataRoot: "D:\\DSH\\game-material-master",
@@ -1073,8 +1075,20 @@ section("设置页：渠道 / 供应商 / 用途绑定");
       { id: "mm-main", name: "MiniMax 默认账号", channelId: "mm-intl", keySet: false, keyHint: "" }
     ],
     protocols: [
-      { id: "ark", label: "火山方舟 Seedream", capability: "image" },
-      { id: "minimax", label: "MiniMax", capability: "video" }
+      {
+        id: "ark",
+        label: "火山方舟 Seedream",
+        capability: "image",
+        defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+        presets: [{ id: "doubao-seedream-4-0-250828", label: "Seedream 4.0" }]
+      },
+      {
+        id: "minimax",
+        label: "MiniMax",
+        capability: "video",
+        defaultBaseUrl: "https://api.minimaxi.com",
+        presets: [{ id: "MiniMax-H3", label: "MiniMax-H3" }]
+      }
     ],
     bind: {
       image: {
@@ -1083,51 +1097,79 @@ section("设置页：渠道 / 供应商 / 用途绑定");
         redraw: { supplierId: "ark-main", model: "doubao-seedream-4-0-250828" }
       },
       video: { default: { supplierId: "mm-main" } }
+    },
+    // 概览状态卡与「当前用的是哪个模型」都读它——宿主算好的解析结果。
+    resolved: {
+      image: {
+        default: TARGET,
+        sheet: TARGET,
+        redraw: TARGET
+      },
+      video: {
+        default: {
+          protocol: "minimax",
+          supplierId: "mm-main",
+          channelId: "mm-intl",
+          model: "MiniMax-H3",
+          baseUrl: "https://api.minimaxi.com",
+          keySet: true
+        }
+      }
     }
   };
-  // Hook 槽位顺序：0 config / 1 notice / 2 testing / 3 openChannel / 4 channelDraft /
-  // 5 openSupplier / 6 supplierDraft / 7 keyDrafts / 8 modelDraft / 9 candidates。
+  // Hook 槽位顺序：0 config / 1 notice / 2 testing / 3 open（手风琴） / 4 openChannel /
+  // 5 channelDraft / 6 openSupplier / 7 supplierDraft / 8 keyDrafts / 9 modelDraft / 10 candidates。
   const renderSettings = (slots) => {
     HOOK.slots = slots;
     HOOK.cursor = 0;
     return Settings({ api });
   };
-
-  const page = settingsText(renderSettings([fakeConfig]));
-  check("分组头报出渠道与模型总数", page.includes("2 个渠道 · 2 个模型"));
+  /** `open` 固定给第一个参数，后面按需补。 */
+  const draw = (rest) => settingsText(renderSettings([fakeConfig, null, null, ...rest]));
+  const page = draw(["channels"]);
+  check("配置概览有标题、说明与总状态", page.includes("配置概览") && page.includes("每次只展开一个区域") && page.includes("可以开始使用"));
+  check("状态卡报出渠道与模型总数", page.includes("渠道与模型") && page.includes("2 个渠道 · 2 个模型"));
+  check("状态卡报出密钥、绑定与生成环境", page.includes("1/2 个账号已配密钥") && page.includes("4/4 处已绑定") && page.includes("ffmpeg 可用"));
   check(
-    "渠道行带协议标签、名称与地址",
-    page.includes("火山方舟 Seedream") && page.includes("火山方舟") && page.includes("ark.cn-beijing.volces.com")
+    "分组标题带状态 pill",
+    page.includes("渠道与模型") && page.includes("供应商") && page.includes("用途绑定") && page.includes("2 个渠道 · 2 个模型")
   );
+  check("渠道行是「名称 + 次要信息」两层", page.includes("火山方舟") && page.includes("ark.cn-beijing.volces.com/api/v3 · 1 个模型"));
   check("供应商行区分「已设置密钥」与「未设置密钥」", page.includes("密钥已设置 …abcd") && page.includes("未设置密钥"));
+  check("四处用途绑定都在", ["生图默认", "拆件摊平图", "部件重绘", "视频默认"].every((title) => page.includes(title)));
   check(
-    "四处用途绑定都在",
-    ["生图默认", "拆件摊平图", "部件重绘", "视频默认"].every((title) => page.includes(title))
+    "模型下拉的空选项写出**当前**实际用的模型",
+    page.includes("（当前：Seedream 4.0）"),
+    (page.match(/（当前：[^）]*）/) ?? ["(没找到)"])[0]
   );
   check("绑定下拉把供应商与它所属的渠道写在一起", page.includes("方舟默认账号 · 火山方舟"));
   check("未配置密钥的供应商在下拉里被标出来", page.includes("MiniMax 默认账号 · MiniMax 国际站（未配置密钥）"));
   check("默认不展开任何编辑器", page.includes("保存渠道") === false && page.includes("保存供应商") === false);
   check(
-    "「添加提供方」按协议各给一个按钮",
-    page.includes("添加 火山方舟 Seedream") && page.includes("添加 MiniMax")
+    "三个添加入口都在（`+ ` 前缀）",
+    page.includes("+ 添加提供方") && page.includes("+ 添加自定义渠道") && page.includes("+ 新增供应商")
+  );
+
+  // 「添加提供方」目录：点开后列出协议、地址与内置模型数
+  const picking = draw(["channels", "__pick__"]);
+  check(
+    "提供方目录列出地址与内置模型数",
+    picking.includes("自动预填协议") && picking.includes("个内置模型") && picking.includes("ark.cn-beijing.volces.com"),
+    ""
   );
 
   // 展开渠道编辑器：字段、模型目录、保存/取消都要出现
-  const editing = settingsText(
-    renderSettings([
-      fakeConfig,
-      null,
-      null,
-      "ark-cn",
-      {
-        id: "ark-cn",
-        protocol: "ark",
-        name: "火山方舟",
-        baseUrl: "https://ark.example/v1",
-        models: [{ id: "m1", label: "模型一" }]
-      }
-    ])
-  );
+  const editing = draw([
+    "channels",
+    "ark-cn",
+    {
+      id: "ark-cn",
+      protocol: "ark",
+      name: "火山方舟",
+      baseUrl: "https://ark.example/v1",
+      models: [{ id: "m1", label: "模型一" }]
+    }
+  ]);
   check("展开渠道编辑器后出现保存与取消", editing.includes("保存渠道") && editing.includes("取消"));
   check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
   check("模型目录列出已有模型并可移除", editing.includes("模型一（m1）") && editing.includes("移除"));
@@ -1137,63 +1179,39 @@ section("设置页：渠道 / 供应商 / 用途绑定");
     editing.includes("从内置预设挑选") && editing.includes("检测上游模型")
   );
   check("已保存的渠道不显示「先保存」提示", editing.includes("检测需要先保存渠道") === false);
-  const newChannel = settingsText(
-    renderSettings([
-      fakeConfig,
-      null,
-      null,
-      "__new__",
-      { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }
-    ])
-  );
+  const newChannel = draw(["channels", "__new__", { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }]);
   check("草稿还没有 id 时提示检测要先保存渠道", newChannel.includes("检测需要先保存渠道"));
 
   // 候选清单：勾选几个、显示已勾选数量
-  const withCandidates = settingsText(
-    renderSettings([
-      fakeConfig,
-      null,
-      null,
-      "ark-cn",
-      { id: "ark-cn", protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [] },
-      null,
-      null,
-      {},
-      { id: "", label: "" },
-      {
-        note: "本机内置的预设目录（不联网）",
-        models: [
-          { id: "m1", label: "模型一" },
-          { id: "m2", label: "m2" }
-        ],
-        picked: { m1: true }
-      }
-    ])
-  );
+  const withCandidates = draw([
+    "channels",
+    "ark-cn",
+    { id: "ark-cn", protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [] },
+    null,
+    null,
+    {},
+    { id: "", label: "" },
+    {
+      note: "本机内置的预设目录（不联网）",
+      models: [
+        { id: "m1", label: "模型一" },
+        { id: "m2", label: "m2" }
+      ],
+      picked: { m1: true }
+    }
+  ]);
   check("候选清单报出条数与来源", withCandidates.includes("候选 2 个") && withCandidates.includes("本机内置的预设目录（不联网）"));
   check("候选清单按勾选数量给按钮", withCandidates.includes("加入勾选的 1 个"));
   check("候选里显示名与 id 一起给出", withCandidates.includes("模型一（m1）"));
 
   // 展开供应商编辑器：密钥区只在「编辑已有供应商」时出现
-  const supplierEditing = settingsText(
-    renderSettings([
-      fakeConfig,
-      null,
-      null,
-      null,
-      null,
-      "ark-main",
-      { id: "ark-main", name: "方舟默认账号", channelId: "ark-cn" }
-    ])
-  );
+  const supplierEditing = draw(["suppliers", null, null, "ark-main", { id: "ark-main", name: "方舟默认账号", channelId: "ark-cn" }]);
   check("展开供应商编辑器后出现保存与取消", supplierEditing.includes("保存供应商") && supplierEditing.includes("取消"));
   check(
     "已有供应商才显示密钥区",
     supplierEditing.includes("API 密钥") && supplierEditing.includes("保存密钥") && supplierEditing.includes("清除")
   );
-  const newSupplier = settingsText(
-    renderSettings([fakeConfig, null, null, null, null, "__new__", { id: "", name: "", channelId: "ark-cn" }])
-  );
+  const newSupplier = draw(["suppliers", null, null, "__new__", { id: "", name: "", channelId: "ark-cn" }]);
   check(
     "新增供应商时不显示密钥区（还没有 id 可写）",
     newSupplier.includes("新增供应商") && newSupplier.includes("API 密钥") === false
