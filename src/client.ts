@@ -535,6 +535,10 @@
 /* 就地确认条（删除渠道用）：一行文字 + 两个按钮，照 dsh-imagegen 的形态。 */
 .SPR_confirmBar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--dsw-alias-state-warning-primary, #a06a00);border-radius:10px;padding:10px 12px;margin-top:10px;background:var(--dsw-alias-bg-layer-1)}
 .SPR_confirmText{flex:1;min-width:200px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+/* 模型行编辑态：「上游 id → 显示名」两个输入框中间一个箭头，右侧「完成」「×」。 */
+.SPR_arrow{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.SPR_rowX{flex:none;font:inherit;font-size:14px;line-height:1;cursor:pointer;background:transparent;border:0;padding:2px 4px;color:var(--dsw-alias-label-tertiary);border-radius:6px}
+.SPR_rowX:hover{background:var(--dsw-alias-bg-layer-3);color:inherit}
 /* 用途绑定：一行一处，紧凑排布（原来是 4×2 个带重复标签的字段，占 300+ px） */
 .SPR_bindRow{display:flex;align-items:center;gap:8px;margin-top:8px}
 .SPR_bindTitle{flex:none;width:92px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
@@ -8949,11 +8953,65 @@
                         h(Btn, { onClick: () => setCandidates(null) }, "取消")
                       )
                     ),
-                // 模型行：id + 别名 + 「编辑」（改别名）+ 移除。
-                // 「编辑」复用 `modelDraft`——`modelDraft.id === model.id` 就是这一行在编辑态。
-                // 不为它再加一个 Hook：Hook 槽位是验收脚本写死的，加一个后面全错位。
+                // 模型行：`id` + 别名，右侧「编辑」「×」。
+                // 编辑态**整行替换**成两个输入框 + `→`（上游 id → 显示名）+ 「完成」「×」，
+                // 与 dsh-imagegen 一致；「完成」同时提交 id 与别名。
+                // 编辑目标仍是 `modelDraft`（`modelDraft.id` 即正在编辑哪一行），
+                // 新 id 放在 `nextId` 上——`modelDraft` 是个普通对象，多挂一个字段不必加 Hook。
                 ...channelDraft.models.map((model, index) => {
-                  const editingThis = modelDraft.id !== "" && modelDraft.id === model.id;
+                  if (modelDraft.id !== "" && modelDraft.id === model.id) {
+                    const commit = () => {
+                      const nextId = (modelDraft.nextId ?? "").trim();
+                      const label = modelDraft.label.trim();
+                      if (nextId === "") {
+                        setNotice({ kind: "error", text: "模型 id 不能为空" });
+                        return;
+                      }
+                      if (channelDraft.models.some((entry, position) => position !== index && entry.id === nextId)) {
+                        setNotice({ kind: "error", text: `模型「${nextId}」已经在这个渠道里了` });
+                        return;
+                      }
+                      setChannelDraft({
+                        ...channelDraft,
+                        models: channelDraft.models.map((entry, position) =>
+                          position !== index
+                            ? entry
+                            : label === "" || label === nextId
+                              ? { id: nextId }
+                              : { id: nextId, label }
+                        )
+                      });
+                      setModelDraft({ id: "", nextId: "", label: "" });
+                    };
+                    return h(
+                      "div",
+                      { className: "SPR_listRow", key: `model-${index}` },
+                      h("input", {
+                        className: "SPR_input",
+                        style: { flex: 1, minWidth: 0 },
+                        value: modelDraft.nextId ?? model.id,
+                        onChange: (event) => setModelDraft({ ...modelDraft, nextId: event.target.value })
+                      }),
+                      h("span", { className: "SPR_arrow" }, "→"),
+                      h("input", {
+                        className: "SPR_input",
+                        style: { flex: 1, minWidth: 0 },
+                        placeholder: "显示名（留空即用 id）",
+                        value: modelDraft.label,
+                        onChange: (event) => setModelDraft({ ...modelDraft, label: event.target.value })
+                      }),
+                      h(Btn, { onClick: commit }, "完成"),
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "SPR_rowX",
+                          onClick: () => setModelDraft({ id: "", nextId: "", label: "" })
+                        },
+                        "×"
+                      )
+                    );
+                  }
                   return h(
                     "div",
                     { className: "SPR_listRow", key: `model-${index}` },
@@ -8965,49 +9023,23 @@
                         ? null
                         : h("div", { className: "SPR_listMeta" }, model.label)
                     ),
-                    editingThis
-                      ? h(
-                          "div",
-                          { className: "SPR_keyRow", style: { flex: 1 } },
-                          h("input", {
-                            className: "SPR_input",
-                            placeholder: "显示名（留空即去掉别名）",
-                            value: modelDraft.label,
-                            onChange: (event) => setModelDraft({ ...modelDraft, label: event.target.value })
-                          }),
-                          h(
-                            Btn,
-                            {
-                              onClick: () => {
-                                const label = modelDraft.label.trim();
-                                setChannelDraft({
-                                  ...channelDraft,
-                                  models: channelDraft.models.map((entry, position) =>
-                                    position !== index
-                                      ? entry
-                                      : label === "" || label === entry.id
-                                        ? { id: entry.id }
-                                        : { id: entry.id, label }
-                                  )
-                                });
-                                setModelDraft({ id: "", label: "" });
-                              }
-                            },
-                            "保存别名"
-                          ),
-                          h(Btn, { onClick: () => setModelDraft({ id: "", label: "" }) }, "取消")
-                        )
-                      : h(Btn, { onClick: () => setModelDraft({ id: model.id, label: model.label ?? "" }) }, "编辑"),
                     h(
                       Btn,
+                      { onClick: () => setModelDraft({ id: model.id, nextId: model.id, label: model.label ?? "" }) },
+                      "编辑"
+                    ),
+                    h(
+                      "button",
                       {
+                        type: "button",
+                        className: "SPR_rowX",
                         onClick: () =>
                           setChannelDraft({
                             ...channelDraft,
                             models: channelDraft.models.filter((_, position) => position !== index)
                           })
                       },
-                      "移除"
+                      "×"
                     )
                   );
                 }),

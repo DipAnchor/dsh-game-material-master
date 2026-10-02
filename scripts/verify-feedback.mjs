@@ -1212,13 +1212,25 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   ]);
   check("展开渠道编辑器后出现保存与取消", editing.includes("保存渠道") && editing.includes("取消"));
   check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
-  check("模型目录列出已有模型并可移除", editing.includes("m1") && editing.includes("移除"));
+  check("模型目录列出已有模型并可移除", editing.includes("m1") && editing.includes("编辑") && editing.includes("×"));
+  // 编辑态：`modelDraft.id` 指向那一行（新 id 挂在 `nextId` 上），整行换成两个输入框 + `→`。
+  const editingModel = draw([
+    "channels",
+    "ark-cn",
+    { id: "ark-cn", protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [{ id: "m1", label: "模型一" }] },
+    "",
+    false,
+    "",
+    { id: "m1", nextId: "m1", label: "模型一" },
+    null
+  ]);
+  check("模型行编辑态是「id → 显示名」+「完成」+「×」", editingModel.includes("→") && editingModel.includes("完成") && editingModel.includes("×"));
   check("模型目录可以添加模型", editing.includes("添加模型"));
   check(
     "编辑器里有「从内置预设挑选」与「重新检测」",
     editing.includes("从内置预设挑选") && editing.includes("重新检测")
   );
-  check("模型行给出 id 与别名，并可「编辑」「移除」", editing.includes("m1") && editing.includes("模型一") && editing.includes("移除"));
+  check("模型行给出 id 与别名，并可「编辑」「×」", editing.includes("m1") && editing.includes("模型一") && editing.includes("×"));
   check("有「从其他渠道复制…」入口", editing.includes("从其他渠道复制…"));
   check("已保存的渠道不显示「先保存」提示", editing.includes("检测需要先保存渠道") === false);
   check("渠道编辑器里有 API 密钥字段与「显示密钥」", editing.includes("API 密钥") && editing.includes("显示密钥"));
