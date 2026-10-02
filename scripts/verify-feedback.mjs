@@ -1178,12 +1178,14 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   ]);
   check("展开渠道编辑器后出现保存与取消", editing.includes("保存渠道") && editing.includes("取消"));
   check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
-  check("模型目录列出已有模型并可移除", editing.includes("模型一（m1）") && editing.includes("移除"));
+  check("模型目录列出已有模型并可移除", editing.includes("m1") && editing.includes("移除"));
   check("模型目录可以添加模型", editing.includes("添加模型"));
   check(
-    "编辑器里有「从内置预设挑选」与「检测上游模型」",
-    editing.includes("从内置预设挑选") && editing.includes("检测上游模型")
+    "编辑器里有「从内置预设挑选」与「重新检测」",
+    editing.includes("从内置预设挑选") && editing.includes("重新检测")
   );
+  check("模型行给出 id 与别名，并可「编辑」「移除」", editing.includes("m1") && editing.includes("模型一") && editing.includes("移除"));
+  check("有「从其他渠道复制…」入口", editing.includes("从其他渠道复制…"));
   check("已保存的渠道不显示「先保存」提示", editing.includes("检测需要先保存渠道") === false);
   check("渠道编辑器里有 API 密钥字段与「显示密钥」", editing.includes("API 密钥") && editing.includes("显示密钥"));
   check(
@@ -1198,6 +1200,7 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   );
   const newChannel = draw(["channels", "__new__", { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }]);
   check("草稿还没有 id 时提示检测要先保存渠道", newChannel.includes("检测需要先保存渠道"));
+  check("还没有模型时按钮写「检测模型」", newChannel.includes("检测模型"));
   check(
     "新增渠道时不显示「显示密钥」（还没有 id 可读）",
     newChannel.includes("API 密钥") && newChannel.includes("显示密钥") === false
@@ -1222,7 +1225,10 @@ section("设置页：渠道 / 供应商 / 用途绑定");
       picked: { m1: true }
     }
   ]);
-  check("候选清单报出条数与来源", withCandidates.includes("候选 2 个") && withCandidates.includes("本机内置的预设目录（不联网）"));
+  check(
+    "候选清单给出回执与下一步提示",
+    withCandidates.includes("本机内置的预设目录（不联网）") && withCandidates.includes("勾选后点「加入」")
+  );
   check("候选清单按勾选数量给按钮", withCandidates.includes("加入勾选的 1 个"));
   check("候选里显示名与 id 一起给出", withCandidates.includes("模型一（m1）"));
 }
