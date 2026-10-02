@@ -8185,6 +8185,15 @@
       const [modelDraft, setModelDraft] = React.useState({ id: "", label: "" });
       // 模型候选：`null` = 没在挑；否则是一份可勾选的清单（内置预设 或 上游检测结果）。
       const [candidates, setCandidates] = React.useState(null);
+      /**
+       * 模型行的编辑态：`null` = 没有行在编辑，否则 `{ id, nextId, label }`（`id` 是原 id）。
+       *
+       * **必须与 `modelDraft` 分开**——那个是「手动添加模型」的输入框。曾经合用一个对象，
+       * 结果是点某一行的「编辑」会把它的 id 与别名灌进添加框，用户看到的是
+       * 「我想加的那个被改掉了」。放在 Hook 列表**最后**：验收脚本没喂到的槽位会回落到
+       * 初值，所以已有那些 `draw([...])` 调用不必逐个补参数。
+       */
+      const [modelEdit, setModelEdit] = React.useState(null);
 
       const load = React.useCallback(async () => {
         if (api === undefined) return;
@@ -8825,41 +8834,9 @@
                   )
                 ),
                 h(
-                  "label",
+                  "div",
                   { className: "SPR_field" },
-                  h("span", { className: "SPR_fieldLabel" }, "模型目录（上游模型 id，显示名可选）"),
-                  h("input", {
-                    className: "SPR_input",
-                    placeholder: "输入模型 id，例如 qwen-image",
-                    value: modelDraft.id,
-                    onChange: (event) => setModelDraft({ ...modelDraft, id: event.target.value })
-                  }),
-                  h("input", {
-                    className: "SPR_input",
-                    placeholder: "显示名（可留空）",
-                    value: modelDraft.label,
-                    onChange: (event) => setModelDraft({ ...modelDraft, label: event.target.value })
-                  }),
-                  h(
-                    Btn,
-                    {
-                      disabled: modelDraft.id.trim() === "",
-                      onClick: () => {
-                        const id = modelDraft.id.trim();
-                        if (channelDraft.models.some((model) => model.id === id)) {
-                          setNotice({ kind: "error", text: `模型「${id}」已经在这个渠道里了` });
-                          return;
-                        }
-                        const label = modelDraft.label.trim();
-                        setChannelDraft({
-                          ...channelDraft,
-                          models: [...channelDraft.models, label === "" ? { id } : { id, label }]
-                        });
-                        setModelDraft({ id: "", label: "" });
-                      }
-                    },
-                    "添加模型"
-                  )
+                  h("span", { className: "SPR_fieldLabel" }, "模型目录（上游模型 id，显示名可选）")
                 ),
                 h(
                   "div",
@@ -8959,10 +8936,10 @@
                 // 编辑目标仍是 `modelDraft`（`modelDraft.id` 即正在编辑哪一行），
                 // 新 id 放在 `nextId` 上——`modelDraft` 是个普通对象，多挂一个字段不必加 Hook。
                 ...channelDraft.models.map((model, index) => {
-                  if (modelDraft.id !== "" && modelDraft.id === model.id) {
+                  if (modelEdit !== null && modelEdit.id === model.id) {
                     const commit = () => {
-                      const nextId = (modelDraft.nextId ?? "").trim();
-                      const label = modelDraft.label.trim();
+                      const nextId = (modelEdit.nextId ?? "").trim();
+                      const label = modelEdit.label.trim();
                       if (nextId === "") {
                         setNotice({ kind: "error", text: "模型 id 不能为空" });
                         return;
@@ -8981,7 +8958,7 @@
                               : { id: nextId, label }
                         )
                       });
-                      setModelDraft({ id: "", nextId: "", label: "" });
+                      setModelEdit(null);
                     };
                     return h(
                       "div",
@@ -8989,27 +8966,19 @@
                       h("input", {
                         className: "SPR_input",
                         style: { flex: 1, minWidth: 0 },
-                        value: modelDraft.nextId ?? model.id,
-                        onChange: (event) => setModelDraft({ ...modelDraft, nextId: event.target.value })
+                        value: modelEdit.nextId ?? "",
+                        onChange: (event) => setModelEdit({ ...modelEdit, nextId: event.target.value })
                       }),
                       h("span", { className: "SPR_arrow" }, "→"),
                       h("input", {
                         className: "SPR_input",
                         style: { flex: 1, minWidth: 0 },
                         placeholder: "显示名（留空即用 id）",
-                        value: modelDraft.label,
-                        onChange: (event) => setModelDraft({ ...modelDraft, label: event.target.value })
+                        value: modelEdit.label,
+                        onChange: (event) => setModelEdit({ ...modelEdit, label: event.target.value })
                       }),
                       h(Btn, { onClick: commit }, "完成"),
-                      h(
-                        "button",
-                        {
-                          type: "button",
-                          className: "SPR_rowX",
-                          onClick: () => setModelDraft({ id: "", nextId: "", label: "" })
-                        },
-                        "×"
-                      )
+                      h("button", { type: "button", className: "SPR_rowX", onClick: () => setModelEdit(null) }, "×")
                     );
                   }
                   return h(
@@ -9025,7 +8994,12 @@
                     ),
                     h(
                       Btn,
-                      { onClick: () => setModelDraft({ id: model.id, nextId: model.id, label: model.label ?? "" }) },
+                      {
+                        onClick: () =>
+                          // 没有别名时右框预填 id——基准里两个框默认都是同一个值，
+                          // 直接改哪个都行，不用先想「我本来有没有起过别名」。
+                          setModelEdit({ id: model.id, nextId: model.id, label: model.label ?? model.id })
+                      },
                       "编辑"
                     ),
                     h(
@@ -9043,6 +9017,46 @@
                     )
                   );
                 }),
+                // 手动添加放在**最下面**（照 dsh-imagegen）：先看已有清单，再加新的。
+                // 它读的是 `modelDraft`，与上面行的编辑态（`modelEdit`）互不干扰。
+                h(
+                  "div",
+                  { className: "SPR_keyRow" },
+                  h("input", {
+                    className: "SPR_input",
+                    style: { flex: 1, minWidth: 0 },
+                    placeholder: "输入模型 id，例如 qwen-image",
+                    value: modelDraft.id,
+                    onChange: (event) => setModelDraft({ ...modelDraft, id: event.target.value })
+                  }),
+                  h("input", {
+                    className: "SPR_input",
+                    style: { flex: 1, minWidth: 0 },
+                    placeholder: "显示名（留空即用 id）",
+                    value: modelDraft.label,
+                    onChange: (event) => setModelDraft({ ...modelDraft, label: event.target.value })
+                  }),
+                  h(
+                    Btn,
+                    {
+                      disabled: modelDraft.id.trim() === "",
+                      onClick: () => {
+                        const id = modelDraft.id.trim();
+                        if (channelDraft.models.some((model) => model.id === id)) {
+                          setNotice({ kind: "error", text: `模型「${id}」已经在这个渠道里了` });
+                          return;
+                        }
+                        const label = modelDraft.label.trim();
+                        setChannelDraft({
+                          ...channelDraft,
+                          models: [...channelDraft.models, label === "" || label === id ? { id } : { id, label }]
+                        });
+                        setModelDraft({ id: "", label: "" });
+                      }
+                    },
+                    "添加模型"
+                  )
+                ),
                 // 「从其他渠道复制…」：选中即整份并入（重复的 id 跳过），不攒、不二次确认。
                 h(
                   "select",

@@ -1213,7 +1213,8 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   check("展开渠道编辑器后出现保存与取消", editing.includes("保存渠道") && editing.includes("取消"));
   check("编辑器里有接口协议与 Base URL", editing.includes("接口协议") && editing.includes("Base URL"));
   check("模型目录列出已有模型并可移除", editing.includes("m1") && editing.includes("编辑") && editing.includes("×"));
-  // 编辑态：`modelDraft.id` 指向那一行（新 id 挂在 `nextId` 上），整行换成两个输入框 + `→`。
+  // 编辑态：`modelEdit.id` 指向那一行（新 id 在 `nextId` 上），整行换成两个输入框 + `→`。
+  // 它与手动添加用的 `modelDraft`（第 9 槽）是**两个槽**——合用时点「编辑」会污染添加框。
   const editingModel = draw([
     "channels",
     "ark-cn",
@@ -1221,10 +1222,18 @@ section("设置页：渠道 / 供应商 / 用途绑定");
     "",
     false,
     "",
-    { id: "m1", nextId: "m1", label: "模型一" },
-    null
+    { id: "", label: "" },
+    null,
+    { id: "m1", nextId: "m1", label: "模型一" }
   ]);
   check("模型行编辑态是「id → 显示名」+「完成」+「×」", editingModel.includes("→") && editingModel.includes("完成") && editingModel.includes("×"));
+  // 手动添加框仍在该在的地方（「添加模型」按钮 + 模型目录标题）。
+  // 「编辑态不被污染」不单独断言——它与上面那条是同一件事的两面：若把 `modelEdit` 与
+  // `modelDraft` 合回一个槽，上面那条（编辑态要出现「→」与「完成」）会直接失败。
+  check(
+    "手动添加的入口仍在（添加模型按钮 + 模型目录标题）",
+    editingModel.includes("添加模型") && editingModel.includes("模型目录（上游模型 id，显示名可选）")
+  );
   check("模型目录可以添加模型", editing.includes("添加模型"));
   check(
     "编辑器里有「从内置预设挑选」与「重新检测」",
