@@ -8602,7 +8602,32 @@
               )
             : null,
           ...channels.map((channel) =>
-            h(
+            // 删除确认**长在被删的那一行原地**（照 dsh-imagegen）：那一行整个换成确认条，
+            // 而不是另起一条挂在列表下方。位置上「谁要没了」一目了然，也不会看串行。
+            openChannel === "__confirm__" && channelDraft !== null && channelDraft.id === channel.id
+              ? h(
+                  "div",
+                  { className: "SPR_confirmBar", key: channel.id },
+                  h(
+                    "span",
+                    { className: "SPR_confirmText" },
+                    `删除渠道「${channel.name}」？该渠道的密钥与模型目录将被移除；已生成的历史与项目里的记录仍会保留。`
+                  ),
+                  h(
+                    Btn,
+                    {
+                      onClick: () =>
+                        void run(async () => {
+                          await api.deleteChannel({ id: channel.id });
+                          setOpenChannel(null);
+                          setChannelDraft(null);
+                        }, "渠道已删除")
+                    },
+                    "确认删除"
+                  ),
+                  h(Btn, { onClick: () => { setOpenChannel(null); setChannelDraft(null); } }, "取消")
+                )
+              : h(
               "div",
               { className: "SPR_listRow", key: channel.id },
               h(
@@ -8661,33 +8686,6 @@
               )
             )
           ),
-          // 删除确认：**就地一条**（照 dsh-imagegen），不是原生弹窗。
-          // 文案要说清「什么会没、什么还在」——只喊「无法撤销」会让人不敢删，
-          // 而实际上删掉的只是这条渠道本身，已生成的图与项目记录都留着。
-          openChannel === "__confirm__" && channelDraft !== null
-            ? h(
-                "div",
-                { className: "SPR_confirmBar" },
-                h(
-                  "span",
-                  { className: "SPR_confirmText" },
-                  `删除渠道「${channelDraft.name || channelDraft.id}」？该渠道的密钥与模型目录将被移除；已生成的历史与项目里的记录仍会保留。`
-                ),
-                h(
-                  Btn,
-                  {
-                    onClick: () =>
-                      void run(async () => {
-                        await api.deleteChannel({ id: channelDraft.id });
-                        setOpenChannel(null);
-                        setChannelDraft(null);
-                      }, "渠道已删除")
-                  },
-                  "确认删除"
-                ),
-                h(Btn, { onClick: () => { setOpenChannel(null); setChannelDraft(null); } }, "取消")
-              )
-            : null,
           openChannel !== null && openChannel !== "__confirm__" && channelDraft !== null
             ? h(
                 "div",
