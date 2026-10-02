@@ -517,6 +517,18 @@
 .SPR_listMeta{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .SPR_pick{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1);color:inherit;margin-top:8px}
 .SPR_pick:hover{border-color:var(--dsw-alias-state-business-primary)}
+/* 弹窗：提供方目录与渠道编辑器都用它。遮罩沿用看大图那套（position:fixed 在本插件里可用）。 */
+.SPR_mask{position:fixed;inset:0;z-index:70;background:rgba(10,12,16,.5);display:flex;align-items:flex-start;justify-content:center;padding:44px 20px;box-sizing:border-box;overflow:auto}
+.SPR_modal{width:100%;max-width:600px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;box-shadow:0 18px 56px rgba(0,0,0,.42);display:flex;flex-direction:column;gap:10px}
+.SPR_modalHead{position:relative;padding-right:28px}
+.SPR_modalHead h3{margin:0;font-size:14px;font-weight:600}
+.SPR_modalHead p{margin:4px 0 0;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.SPR_modalClose{position:absolute;top:-2px;right:0;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:16px;line-height:1;cursor:pointer;font-family:inherit}
+.SPR_modalClose:hover{background:var(--dsw-alias-bg-layer-1);color:inherit}
+.SPR_modal .SPR_pick{margin-top:0}
+.SPR_modal .SPR_fields{display:flex;flex-direction:column;gap:10px}
+.SPR_modalFoot{display:flex;align-items:center;gap:8px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px;margin-top:2px}
+.SPR_modalFoot .SPR_spacer{flex:1}
 /* 用途绑定：一行一处，紧凑排布（原来是 4×2 个带重复标签的字段，占 300+ px） */
 .SPR_bindRow{display:flex;align-items:center;gap:8px;margin-top:8px}
 .SPR_bindTitle{flex:none;width:92px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
@@ -8206,6 +8218,28 @@
         return channel.keySet ? `（已设置 ${channel.keyHint}）` : "（未设置）";
       };
 
+      /** 提供方目录的候选项：按搜索词过滤提供商名与模型 id。 */
+      const pickerEntries = (() => {
+        // `?? ""`：验收脚本的假 useState 在没喂槽位时给 undefined，真实 React 会给初值。
+        const query = (pickerQuery ?? "").trim().toLowerCase();
+        return protocols
+          .map((entry) => {
+            const models = (entry.presets ?? []).map((model) => model.id);
+            return {
+              id: entry.id,
+              label: entry.label,
+              models,
+              modelText: models.join(" · ") || "（没有内置模型，自己填）"
+            };
+          })
+          .filter(
+            (entry) =>
+              query === "" ||
+              entry.label.toLowerCase().includes(query) ||
+              entry.models.some((id) => id.toLowerCase().includes(query))
+          );
+      })();
+
       /** 打开「添加提供方」目录（在渠道分组里就地展开）。 */
       const openProviderPicker = () => {
         setCandidates(null);
@@ -8234,7 +8268,8 @@
       const mergeCandidates = () => {
         if (candidates === null || channelDraft === null) return;
         const merged = [...channelDraft.models];
-        for (const model of candidates.models) {
+        // `?? []`：验收脚本的假 Hook 在槽位越界时给 undefined，真实 React 不会。
+        for (const model of candidates.models ?? []) {
           if (candidates.picked[model.id] !== true) continue;
           if (merged.some((entry) => entry.id === model.id)) continue;
           merged.push({ id: model.id, label: model.label });
@@ -8243,7 +8278,9 @@
         setCandidates(null);
       };
       const pickedCount =
-        candidates === null ? 0 : candidates.models.filter((model) => candidates.picked[model.id] === true).length;
+        candidates === null
+          ? 0
+          : (candidates.models ?? []).filter((model) => candidates.picked[model.id] === true).length;
 
       // ── 概览与手风琴 ────────────────────────────────────────────────────
       // 外壳照 dsh-imagegen 的「生图配置」：顶部一屏看懂状态，分组每次只展开一个，
@@ -8489,31 +8526,54 @@
             h(Btn, { onClick: () => openChannelEditor(null) }, "+ 添加自定义渠道")
           ),
           channels.length === 0 ? h("p", { className: "SPR_hint" }, "尚无渠道，点击下方按钮添加") : null,
-          // 提供方目录：点一个就预填协议 / 地址 / 内置模型，用户基本只差填密钥。
+          // 提供方目录：**弹窗**（照 dsh-imagegen 的形态：标题 + 搜索 + 提供商卡片 + 末尾自定义）。
           openChannel === "__pick__"
             ? h(
                 "div",
-                null,
-                h("p", { className: "SPR_hint" }, "选择常规 API Key 渠道；点一个就自动填好协议、地址与模型目录，之后只需补上密钥。"),
-                ...protocols.map((entry) =>
+                { className: "SPR_mask", onClick: () => setOpenChannel(null) },
+                h(
+                  "div",
+                  { className: "SPR_modal", onClick: (event) => event.stopPropagation() },
+                  h(
+                    "div",
+                    { className: "SPR_modalHead" },
+                    h("h3", null, "添加提供方"),
+                    h("p", null, "选择常规 API Key 渠道；点一个就自动填好协议、地址与模型目录，之后只需补上密钥。"),
+                    h("button", { type: "button", className: "SPR_modalClose", onClick: () => setOpenChannel(null) }, "×")
+                  ),
+                  h("input", {
+                    className: "SPR_input",
+                    placeholder: "搜索提供方或模型",
+                    value: pickerQuery,
+                    onChange: (event) => setPickerQuery(event.target.value)
+                  }),
+                  ...pickerEntries.map((entry) =>
+                    h(
+                      "button",
+                      { type: "button", className: "SPR_pick", key: entry.id, onClick: () => openChannelFromPreset(entry) },
+                      h(
+                        "span",
+                        { className: "SPR_listMain" },
+                        h("span", { className: "SPR_listName" }, entry.label),
+                        // 与 dsh-imagegen 一样列**模型 id**，不是地址——挑提供方看的就是「它有哪些模型」。
+                        h("span", { className: "SPR_listMeta" }, entry.modelText)
+                      ),
+                      h("span", { className: "SPR_chevron" }, "›")
+                    )
+                  ),
+                  pickerEntries.length === 0 ? h("p", { className: "SPR_hint" }, "没有匹配的提供方。") : null,
                   h(
                     "button",
-                    { type: "button", className: "SPR_pick", key: entry.id, onClick: () => openChannelFromPreset(entry) },
+                    { type: "button", className: "SPR_pick", onClick: () => openChannelEditor(null) },
                     h(
                       "span",
                       { className: "SPR_listMain" },
-                      h("span", { className: "SPR_listName" }, entry.label),
-                      h(
-                        "span",
-                        { className: "SPR_listMeta" },
-                        // 与 dsh-imagegen 一样列**模型 id**，不是地址——用户挑提供方看的就是「它有哪些模型」。
-                        (entry.presets ?? []).map((model) => model.id).join(" · ") || "（没有内置模型，自己填）"
-                      )
+                      h("span", { className: "SPR_listName" }, "+ 添加自定义渠道"),
+                      h("span", { className: "SPR_listMeta" }, "自行填写 API 地址、密钥与模型目录")
                     ),
                     h("span", { className: "SPR_chevron" }, "›")
                   )
-                ),
-                h("div", { className: "SPR_toolbar" }, h(Btn, { onClick: () => setOpenChannel(null) }, "取消"))
+                )
               )
             : null,
           ...channels.map((channel) =>
@@ -8561,8 +8621,41 @@
           openChannel !== null && channelDraft !== null
             ? h(
                 "div",
-                { className: "SPR_fields" },
-                h("h3", { style: { margin: "10px 0 0", fontSize: 13 } }, openChannel === "__new__" ? "新增渠道" : `编辑「${channelDraft.name || channelDraft.id}」`),
+                {
+                  className: "SPR_mask",
+                  onClick: () => {
+                    setOpenChannel(null);
+                    setChannelDraft(null);
+                  }
+                },
+                h(
+                  "div",
+                  { className: "SPR_modal", onClick: (event) => event.stopPropagation() },
+                  h(
+                    "div",
+                    { className: "SPR_modalHead" },
+                    h(
+                      "h3",
+                      null,
+                      openChannel === "__new__" ? "添加自定义渠道" : `渠道 · ${channelDraft.name || channelDraft.id}`
+                    ),
+                    h("p", null, "改动随底部的「保存渠道」一起生效。"),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "SPR_modalClose",
+                        onClick: () => {
+                          setOpenChannel(null);
+                          setChannelDraft(null);
+                        }
+                      },
+                      "×"
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "SPR_fields" },
                 h(
                   "label",
                   { className: "SPR_field" },
@@ -8781,11 +8874,23 @@
                     )
                   )
                 ),
-                h(
-                  "div",
-                  { className: "SPR_toolbar" },
-                  h(Btn, { disabled: channelDraft.models.length === 0, onClick: saveChannel }, "保存渠道"),
-                  h(Btn, { onClick: () => { setOpenChannel(null); setChannelDraft(null); } }, "取消")
+                    h(
+                      "div",
+                      { className: "SPR_modalFoot" },
+                      // 删除放在弹窗左下角（照 dsh-imagegen 的形态）。仍被用途绑定引用的会被拒绝，
+                      // 宿主的拒绝信息已经说清是哪几个用途，所以这里不做二次确认。
+                      openChannel === "__new__"
+                        ? null
+                        : h(
+                            Btn,
+                            { onClick: () => run(() => api.deleteChannel({ id: channelDraft.id }), "渠道已删除") },
+                            "删除此渠道"
+                          ),
+                      h("span", { className: "SPR_spacer" }),
+                      h(Btn, { onClick: () => { setOpenChannel(null); setChannelDraft(null); } }, "取消"),
+                      h(Btn, { disabled: channelDraft.models.length === 0, onClick: saveChannel }, "保存渠道")
+                    )
+                  )
                 )
               )
             : null

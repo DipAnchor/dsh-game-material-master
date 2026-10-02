@@ -1156,6 +1156,13 @@ section("设置页：渠道 / 供应商 / 用途绑定");
     picking.includes("选择常规 API Key 渠道") && picking.includes("doubao-seedream-4-0-250828"),
     ""
   );
+  check(
+    "提供方目录是弹窗（标题 + 末尾自定义入口的说明文案）",
+    picking.includes("添加提供方") &&
+      picking.includes("自行填写 API 地址、密钥与模型目录") &&
+      picking.includes("+ 添加自定义渠道"),
+    ""
+  );
 
   // 展开渠道编辑器：字段、模型目录、保存/取消都要出现
   const editing = draw([
@@ -1179,6 +1186,12 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   );
   check("已保存的渠道不显示「先保存」提示", editing.includes("检测需要先保存渠道") === false);
   check("渠道编辑器里有 API 密钥字段与「显示密钥」", editing.includes("API 密钥") && editing.includes("显示密钥"));
+  check(
+    "渠道编辑器是弹窗（标题 + 说明 + 底部删除此渠道）",
+    editing.includes("渠道 · 火山方舟") &&
+      editing.includes("改动随底部的「保存渠道」一起生效") &&
+      editing.includes("删除此渠道")
+  );
   const newChannel = draw(["channels", "__new__", { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }]);
   check("草稿还没有 id 时提示检测要先保存渠道", newChannel.includes("检测需要先保存渠道"));
   check(
@@ -1186,14 +1199,15 @@ section("设置页：渠道 / 供应商 / 用途绑定");
     newChannel.includes("API 密钥") && newChannel.includes("显示密钥") === false
   );
 
-  // 候选清单：勾选几个、显示已勾选数量
+  // 候选清单：勾选几个、显示已勾选数量。
+  // 槽位 6/7/8 是编辑器里的密钥输入、显示开关与提供方搜索框；候选清单在第 10 槽。
   const withCandidates = draw([
     "channels",
     "ark-cn",
     { id: "ark-cn", protocol: "ark", name: "火山方舟", baseUrl: "https://ark.example/v1", models: [] },
-    null,
-    null,
-    {},
+    "",
+    false,
+    "",
     { id: "", label: "" },
     {
       note: "本机内置的预设目录（不联网）",
