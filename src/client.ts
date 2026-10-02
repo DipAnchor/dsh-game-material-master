@@ -8515,7 +8515,7 @@
           "p",
           { className: "SPR_hint" },
           ready
-            ? "渠道、供应商与用途绑定都已配好，可以直接开始。改动即时生效，不需要点保存。"
+            ? "渠道与用途绑定都已配好，可以直接开始。改动即时生效，不需要点保存。"
             : "先添加一条渠道开始使用。改动即时生效，不需要点保存。"
         ),
 
@@ -8554,8 +8554,8 @@
           { className: groupClass("channels") },
           sectionHead(
             "channels",
-            "渠道与模型",
-            "一个渠道＝一个 API 地址 + 一个协议 + 一组模型；密钥在「供应商」里",
+            "渠道",
+            "填写各渠道的 API 地址与密钥即可使用对应模型",
             channels.length === 0 ? "未配置" : `${channels.length} 个渠道 · ${modelCount} 个模型`,
             channels.length === 0 ? "warn" : "ok"
           ),

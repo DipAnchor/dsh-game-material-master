@@ -937,8 +937,8 @@ function intakeFor(module: ModuleKey, id: string, told: Set<string>, config: any
   /**
    * 「已知配置」与「阻塞项」。
    *
-   * U4 之后渠道层是唯一真源，所以这里读的是**渠道与供应商**：一个模块要能跑，
-   * 至少得有一条协议对得上的渠道、一个配了密钥的供应商，而且那个供应商被用途绑定指到。
+   * U4 之后渠道层是唯一真源，所以这里读的是**渠道**：一个模块要能跑，
+   * 至少得有一条协议对得上的渠道、它配了密钥，而且它被用途绑定指到。
    * 只报「配没配」，绝不回传密钥本体。
    */
   const slotOf = (capability: string, purpose: string) => config?.resolved?.[capability]?.[purpose] ?? null;
@@ -953,7 +953,7 @@ function intakeFor(module: ModuleKey, id: string, told: Set<string>, config: any
     const slot = slotOf("image", purpose);
     if (slot === null || slot.keySet !== true) {
       blockers.push(
-        "还没配置可用的生图渠道（生图必需）：设置 → 游戏素材大师 →「新增渠道」+「新增供应商」并填 Key，" +
+        "还没配置可用的生图渠道（生图必需）：设置 → 游戏素材大师 →「渠道」里添加一条并填好密钥，" +
           `再把「用途绑定 · ${purpose === "sheet" ? "拆件摊平图" : "生图默认"}」指到它。`
       );
     }
@@ -963,7 +963,7 @@ function intakeFor(module: ModuleKey, id: string, told: Set<string>, config: any
     const slot = slotOf("video", "default");
     if (slot === null || slot.keySet !== true) {
       blockers.push(
-        "还没配置可用的视频渠道（生视频必需）：设置 → 游戏素材大师 →「新增渠道」+「新增供应商」并填 Key，" +
+        "还没配置可用的视频渠道（生视频必需）：设置 → 游戏素材大师 →「渠道」里添加一条并填好密钥，" +
           "再把「用途绑定 · 视频默认」指到它。"
       );
     }

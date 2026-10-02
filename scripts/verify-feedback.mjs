@@ -1131,8 +1131,9 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   check("状态卡报出密钥、绑定与生成环境", page.includes("1/2 条已配密钥") && page.includes("4/4 处已绑定") && page.includes("ffmpeg 可用"));
   check(
     "分组标题带状态 pill",
-    page.includes("渠道与模型") && page.includes("供应商") && page.includes("用途绑定") && page.includes("2 个渠道 · 2 个模型")
+    page.includes("渠道") && page.includes("用途绑定") && page.includes("2 个渠道 · 2 个模型")
   );
+  check("渠道分组用的是基准那句描述", page.includes("填写各渠道的 API 地址与密钥即可使用对应模型"));
   check("渠道行是「名称 + 次要信息」两层", page.includes("火山方舟") && page.includes("ark.cn-beijing.volces.com/api/v3 · 1 个模型"));
   check("渠道行区分「已配密钥」与「未设置密钥」", page.includes("密钥 …abcd") && page.includes("未设置密钥"));
   check("四处用途绑定都在", ["生图默认", "拆件摊平图", "部件重绘", "视频默认"].every((title) => page.includes(title)));
