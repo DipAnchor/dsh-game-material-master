@@ -1192,6 +1192,10 @@ section("设置页：渠道 / 供应商 / 用途绑定");
       editing.includes("改动随底部的「保存渠道」一起生效") &&
       editing.includes("删除此渠道")
   );
+  check(
+    "密钥区：已配置时给「密钥已设置」徽标与「清除密钥」",
+    editing.includes("密钥已设置") && editing.includes("清除密钥")
+  );
   const newChannel = draw(["channels", "__new__", { id: "", protocol: "ark", name: "", baseUrl: "https://ark.example/v1", models: [] }]);
   check("草稿还没有 id 时提示检测要先保存渠道", newChannel.includes("检测需要先保存渠道"));
   check(
