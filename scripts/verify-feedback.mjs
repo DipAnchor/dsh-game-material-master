@@ -1173,6 +1173,30 @@ section("设置页：渠道 / 供应商 / 用途绑定");
       picking.includes("+ 添加自定义渠道"),
     ""
   );
+  // 点提供方卡片**之后**的状态（`openChannel="__new__"` + 预填好的草稿）。
+  //
+  // 假 Hook 的 setState 是空实现，没法「点一下再重渲染」，所以这里直接喂点完的状态。
+  // 也就是说：这条只能验「编辑器会把草稿里的地址与模型渲染出来」，验不了
+  // 「`pickerEntries` 有没有把它们原样带过来」——那个只能靠真机点一次。
+  const pickToEdit = draw([
+    "channels",
+    "__new__",
+    {
+      id: "",
+      protocol: "ark",
+      name: "火山方舟 Seedream",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+      models: [{ id: "doubao-seedream-4-0-250828", label: "Seedream 4.0" }]
+    }
+  ]);
+  // 目录卡片必须把**整条协议条目**带到编辑器，否则点进去地址与模型目录都是空的。
+  check(
+    "点提供方卡片后，编辑器里能看到预填的 Base URL 与模型",
+    pickToEdit.includes("https://ark.cn-beijing.volces.com/api/v3") &&
+      pickToEdit.includes("doubao-seedream-4-0-250828") &&
+      pickToEdit.includes("保存渠道"),
+    ""
+  );
 
   // 展开渠道编辑器：字段、模型目录、保存/取消都要出现
   const editing = draw([
