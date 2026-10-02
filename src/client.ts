@@ -8243,7 +8243,13 @@
         setOpenChannel("__pick__");
       };
 
-      /** 「添加提供方」：按协议预填地址与内置模型目录，一步就能用。 */
+      /**
+       * 「添加提供方」：按协议预填地址与内置模型目录，一步就能用。
+       *
+       * 两个字段都做了兜底：**事件处理器里抛异常的表现就是「点了没反应」**——页面不重渲染、
+       * 也没有可见的报错，只有控制台里一行。而这两张卡与「+ 添加自定义渠道」唯一的区别
+       * 就是它俩要读 `presets` / `defaultBaseUrl`，`entry` 少一个字段就会静默失效。
+       */
       const openChannelFromPreset = (entry) => {
         setOpenChannel("__new__");
         setModelDraft({ id: "", label: "" });
@@ -8255,8 +8261,8 @@
           id: "",
           protocol: entry.id,
           name: entry.label,
-          baseUrl: entry.defaultBaseUrl,
-          models: entry.presets.map((model) => ({ id: model.id, label: model.label }))
+          baseUrl: entry.defaultBaseUrl ?? "",
+          models: (entry.presets ?? []).map((model) => ({ id: model.id, label: model.label }))
         });
       };
 
@@ -8631,7 +8637,21 @@
                 "测试"
               ),
               h(Btn, { onClick: () => openChannelEditor(channel) }, "编辑"),
-              h(Btn, { onClick: () => run(() => api.deleteChannel({ id: channel.id }), "渠道已删除") }, "删除")
+              h(
+                Btn,
+                {
+                  onClick: () => {
+                    // 与仓库里其它删除一致：`window.confirm` 兜一道，别让人误点掉一把密钥。
+                    if (
+                      typeof window !== "undefined" &&
+                      !window.confirm(`删除渠道「${channel.name}」？它的密钥与模型目录会一并移除，无法撤销。`)
+                    )
+                      return;
+                    void run(() => api.deleteChannel({ id: channel.id }), "渠道已删除");
+                  }
+                },
+                "删除"
+              )
             )
           ),
           openChannel !== null && channelDraft !== null
@@ -8994,7 +9014,18 @@
                         ? null
                         : h(
                             Btn,
-                            { onClick: () => run(() => api.deleteChannel({ id: channelDraft.id }), "渠道已删除") },
+                            {
+                              onClick: () => {
+                                if (
+                                  typeof window !== "undefined" &&
+                                  !window.confirm(
+                                    `删除渠道「${channelDraft.name || channelDraft.id}」？它的密钥与模型目录会一并移除，无法撤销。`
+                                  )
+                                )
+                                  return;
+                                void run(() => api.deleteChannel({ id: channelDraft.id }), "渠道已删除");
+                              }
+                            },
                             "删除此渠道"
                           ),
                       h("span", { className: "SPR_spacer" }),
