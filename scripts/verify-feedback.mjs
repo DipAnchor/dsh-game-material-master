@@ -1144,6 +1144,16 @@ section("设置页：渠道 / 供应商 / 用途绑定");
   check("绑定下拉列出渠道", page.includes("火山方舟") && page.includes("MiniMax 国际站"));
   check("未配置密钥的渠道在下拉里被标出来", page.includes("MiniMax 国际站（未配置密钥）"));
   check("默认不展开任何编辑器", page.includes("保存渠道") === false);
+  // 删除确认是**就地一条**（不是原生 window.confirm），文案要说清「什么留着」。
+  const confirming = draw(["channels", "__confirm__", { id: "ark-cn", name: "火山方舟", models: [] }]);
+  check(
+    "删除渠道给就地确认条，并说清什么会保留",
+    confirming.includes("删除渠道「火山方舟」？") &&
+      confirming.includes("已生成的历史与项目里的记录仍会保留") &&
+      confirming.includes("确认删除") &&
+      confirming.includes("取消")
+  );
+  check("确认态不展开编辑器", confirming.includes("保存渠道") === false);
   check(
     "两个添加入口都在（`+ ` 前缀）",
     page.includes("+ 添加提供方") && page.includes("+ 添加自定义渠道")
